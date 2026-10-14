@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+# RootlessKit gives this namespace a private copy of /etc. Avoid its private
+# DNS proxy so the enclosing systemd cgroup can deny every RFC1918 address.
+{
+{% for server in lab.network.bootstrap_dns_servers %}
+    printf '%s\n' 'nameserver {{ server }}'
+{% endfor %}
+    printf '%s\n' 'options edns0 trust-ad'
+} >/etc/resolv.conf
+
+exec /opt/lap/buildkit/{{ versions.buildkit }}/buildkitd --config {{ lap_buildkit_config_path }}
+

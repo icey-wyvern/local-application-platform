@@ -1,0 +1,25 @@
+---
+lap_registry_archive_sha256: 61c9a2c0d5981a78482025b6b69728521fbc78506d68b223d4a2eb825de5ca3d
+lap_buildkit_archive_sha256: 2da148c50540409988c837e62b72176e4a9ad7855548a2dd6ea1cd0c0d2d360d
+lap_trivy_archive_sha256: 2edd39da482bb4e9831962487b68f68e3928ec3137794757f54d00383d79547b
+lap_skopeo_source_sha256: de96bfc2bb523c852af675ffdadd934484812ce190aa8620e1d5fd6c51442e25
+lap_go_archive_sha256: ffb5f8de10c62550dfddab66b36b57030721e0a44a3218e9e1181d7b59f121ca
+lap_buildkit_cpu_quota: 300%
+lap_buildkit_memory_max: 6G
+lap_buildkit_max_parallelism: 3
+lap_buildkit_shared_group: lap-build
+lap_build_agent_vulnerability_threshold: CRITICAL
+lap_build_agent_otlp_node_port: 30418
+lap_build_agent_tls_path: /etc/lap-build-agent/tls
+lap_registry_auth_path: /etc/lap-registry/auth/htpasswd
+lap_registry_tls_path: /etc/lap-registry/tls
+lap_registry_config_path: /etc/lap-registry/config.yml
+lap_buildkit_config_path: /etc/lap-buildkit/buildkitd.toml
+lap_registry_publisher_password: >-
+  {{ lookup('ansible.builtin.password',
+            lookup('ansible.builtin.env', 'BUILD_HOST_SECRET_DIR') + '/registry-publisher-password',
+            length=40, chars=['ascii_letters', 'digits']) }}
+lap_registry_pull_password: >-
+  {{ lookup('ansible.builtin.password',
+            lookup('ansible.builtin.env', 'BUILD_HOST_SECRET_DIR') + '/registry-puller-password',
+            length=40, chars=['ascii_letters', 'digits']) }}

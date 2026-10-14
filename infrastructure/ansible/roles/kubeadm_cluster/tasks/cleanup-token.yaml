@@ -1,0 +1,42 @@
+---
+- name: Remove uploaded control-plane certificate secret after joins
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig=/etc/kubernetes/admin.conf
+      - --namespace=kube-system
+      - delete
+      - secret
+      - kubeadm-certs
+      - --ignore-not-found=true
+  register: lap_delete_uploaded_certificates
+  no_log: true
+  changed_when: "'deleted' in lap_delete_uploaded_certificates.stdout"
+
+- name: List residual kubeadm bootstrap tokens
+  ansible.builtin.command:
+    argv:
+      - kubeadm
+      - token
+      - list
+  register: lap_residual_bootstrap_tokens
+  changed_when: false
+  no_log: true
+
+- name: Record residual bootstrap token identifiers
+  ansible.builtin.set_fact:
+    lap_residual_bootstrap_token_ids: >-
+      {{ (lap_residual_bootstrap_tokens.stdout_lines[1:]
+          | map('regex_replace', '^([^ ]+).*$', '\1')
+          | list) }}
+  no_log: true
+
+- name: Delete residual kubeadm bootstrap tokens
+  ansible.builtin.command:
+    argv:
+      - kubeadm
+      - token
+      - delete
+      - "{{ item }}"
+  loop: "{{ lap_residual_bootstrap_token_ids }}"
+  no_log: true

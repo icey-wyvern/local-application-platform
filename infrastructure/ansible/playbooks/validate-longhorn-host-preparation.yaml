@@ -1,0 +1,87 @@
+---
+- name: Validate non-destructive Longhorn V1 worker prerequisites
+  hosts: workers
+  become: true
+  gather_facts: false
+  vars:
+    lap_longhorn_data_path: /var/lib/longhorn
+  tasks:
+    - name: Read prerequisite package versions
+      ansible.builtin.command:
+        argv: [dpkg-query, -W, "-f=${Status} ${Version}", "{{ item }}"]
+      loop: [cryptsetup, dmsetup, nfs-common, open-iscsi]
+      register: lap_longhorn_packages
+      changed_when: false
+
+    - name: Read iSCSI daemon state
+      ansible.builtin.command:
+        argv: [systemctl, is-active, iscsid]
+      register: lap_longhorn_iscsid
+      changed_when: false
+
+    - name: Read iSCSI daemon enablement
+      ansible.builtin.command:
+        argv: [systemctl, is-enabled, iscsid]
+      register: lap_longhorn_iscsid_enabled
+      changed_when: false
+
+    - name: Check Longhorn kernel modules
+      ansible.builtin.stat:
+        path: "/sys/module/{{ item }}"
+      loop: [dm_crypt, iscsi_tcp]
+      register: lap_longhorn_modules
+
+    - name: Read multipath service states
+      ansible.builtin.command:
+        argv: [systemctl, is-active, "{{ item }}"]
+      loop: [multipathd.service, multipathd.socket]
+      register: lap_longhorn_multipath
+      changed_when: false
+      failed_when: false
+
+    - name: Check required commands
+      ansible.builtin.command:
+        argv: [which, "{{ item }}"]
+      loop: [bash, curl, findmnt, grep, awk, blkid, lsblk, iscsiadm, mount.nfs4, cryptsetup, dmsetup]
+      register: lap_longhorn_commands
+      changed_when: false
+
+    - name: Read data-path filesystem and propagation
+      ansible.builtin.command:
+        argv: [findmnt, --noheadings, --output, "FSTYPE,PROPAGATION", --target, "{{ lap_longhorn_data_path }}"]
+      register: lap_longhorn_mount
+      changed_when: false
+
+    - name: Read data-path capacity
+      ansible.builtin.command:
+        argv: [df, --block-size=1, "--output=size,avail", "{{ lap_longhorn_data_path }}"]
+      register: lap_longhorn_capacity
+      changed_when: false
+
+    - name: Read project firewall table
+      ansible.builtin.command:
+        argv: [nft, list, table, inet, lap]
+      register: lap_longhorn_firewall
+      changed_when: false
+
+    - name: Assert Longhorn V1 prerequisites
+      ansible.builtin.assert:
+        that:
+          - lap_longhorn_packages.results | map(attribute='stdout') | select('search', 'install ok installed') | list | length == 4
+          - lap_longhorn_packages.results | map(attribute='stdout') | select('search', ' 2.1.12') | list | length == 0
+          - lap_longhorn_iscsid.stdout == 'active'
+          - lap_longhorn_iscsid_enabled.stdout == 'enabled'
+          - lap_longhorn_modules.results | map(attribute='stat.exists') | list == [true, true]
+          - lap_longhorn_multipath.results | map(attribute='stdout') | unique | list == ['inactive']
+          - lap_longhorn_commands.results | map(attribute='rc') | unique | list == [0]
+          - lap_longhorn_mount.stdout.split()[0] in ['ext4', 'xfs']
+          - lap_longhorn_mount.stdout.split()[1] in ['shared', 'rshared']
+          - "'3260' in lap_longhorn_firewall.stdout"
+          - "'8500-8504' in lap_longhorn_firewall.stdout"
+          - "'10000-31000' in lap_longhorn_firewall.stdout"
+          - "'2049' in lap_longhorn_firewall.stdout"
+        fail_msg: A worker does not meet the prepared Longhorn V1 host contract.
+
+    - name: Report worker storage capacity without modifying it
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }} {{ lap_longhorn_mount.stdout | trim }} bytes(total,available)={{ lap_longhorn_capacity.stdout_lines[-1] | trim }}"

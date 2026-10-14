@@ -1,0 +1,38 @@
+---
+- name: Validate Kubernetes host-networking firewall scope
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname in groups['control_planes'] + groups['workers']
+      - lab.network.pod_cidr == '10.244.0.0/16'
+      - groups['control_planes'] | length == 3
+      - groups['workers'] | length == 3
+    fail_msg: Generated inventory or pod network does not match the networking contract.
+
+- name: Read current routed administrator connection
+  ansible.builtin.command:
+    argv: [printenv, SSH_CONNECTION]
+  become: false
+  register: lap_networking_ssh_connection
+  changed_when: false
+
+- name: Derive current routed administrator address
+  ansible.builtin.set_fact:
+    lap_node_admin_address: "{{ lap_networking_ssh_connection.stdout.split()[0] }}"
+
+- name: Validate administrator address
+  ansible.builtin.assert:
+    that:
+      - lap_node_admin_address is match('^[0-9]+(\.[0-9]+){3}$')
+
+- name: Configure scoped Kubernetes host-networking firewall allowances
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/nft -c -f %s
+  notify: reload kubernetes node nftables
+
+- name: Apply Kubernetes host-networking firewall configuration
+  ansible.builtin.meta: flush_handlers

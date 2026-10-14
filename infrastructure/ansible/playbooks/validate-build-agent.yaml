@@ -1,0 +1,70 @@
+---
+- name: Validate build-agent host service and cleanup boundaries
+  hosts: build_machines
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read build-agent service state
+      ansible.builtin.command:
+        argv: [systemctl, is-active, lap-build-agent]
+      register: lap_build_agent_state
+      changed_when: false
+
+    - name: Inspect build-agent service isolation
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - show
+          - lap-build-agent
+          - --property=User,Group,SupplementaryGroups,MemoryMax,CPUQuotaPerSecUSec,IPAddressDeny,IPAddressAllow
+      register: lap_build_agent_unit
+      changed_when: false
+
+    - name: Inspect build-agent listener
+      ansible.builtin.command:
+        argv: [ss, -H, -lntp, "sport = :{{ lab.build_agent.port }}"]
+      register: lap_build_agent_listener
+      changed_when: false
+
+    - name: Inspect private key and registry credential permissions
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/lap-build-agent/tls/server.key
+        - "{{ lab.build_agent.state_path }}/registry-auth.json"
+      register: lap_build_agent_secrets
+
+    - name: Assert service identity isolation and narrow listener
+      ansible.builtin.assert:
+        that:
+          - lap_build_agent_state.stdout == 'active'
+          - "('User=' + lab.build_agent.service_user) in lap_build_agent_unit.stdout"
+          - "'MemoryMax=1073741824' in lap_build_agent_unit.stdout"
+          - "(':' + (lab.build_agent.port | string)) in lap_build_agent_listener.stdout"
+          - "('0.0.0.0:' + (lab.build_agent.port | string)) not in lap_build_agent_listener.stdout"
+          - "('[::]:' + (lab.build_agent.port | string)) not in lap_build_agent_listener.stdout"
+          - lap_build_agent_secrets.results[0].stat.mode == '0640'
+          - lap_build_agent_secrets.results[1].stat.mode == '0600'
+
+    - name: Restart build agent for recovery validation
+      ansible.builtin.systemd_service:
+        name: lap-build-agent
+        state: restarted
+
+    - name: Wait for build-agent listener after restart
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: "{{ lab.build_agent.port }}"
+        timeout: 30
+
+    - name: Find leaked temporary workspaces
+      ansible.builtin.find:
+        paths: "{{ lab.build_agent.state_path }}/workspaces"
+        file_type: directory
+        recurse: false
+        patterns: "build-????????-????-????-????-????????????-*"
+      register: lap_build_agent_workspaces
+
+    - name: Assert restart leaves no abandoned request workspace
+      ansible.builtin.assert:
+        that: lap_build_agent_workspaces.matched == 0

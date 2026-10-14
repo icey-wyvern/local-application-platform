@@ -1,0 +1,36 @@
+root = "{{ lab.build_host.buildkit_state_path }}/state"
+
+[log]
+  format = "text"
+  level = "info"
+
+[grpc]
+  address = ["unix://{{ lab.build_host.buildkit_socket }}"]
+
+[dns]
+  nameservers = [{% for server in lab.network.bootstrap_dns_servers %}"{{ server }}"{% if not loop.last %}, {% endif %}{% endfor %}]
+
+[cdi]
+  disabled = true
+
+[history]
+  maxAge = 172800
+  maxEntries = 50
+
+[worker.oci]
+  enabled = true
+  rootless = true
+  # Ubuntu's restricted procfs mounts reject a second nested PID sandbox.
+  # The service still has RootlessKit PID/user/network namespaces around the
+  # complete daemon cgroup, so build processes cannot see host processes.
+  noProcessSandbox = true
+  snapshotter = "native"
+  binary = "/opt/lap/buildkit/{{ versions.buildkit }}/buildkit-runc"
+  max-parallelism = {{ lap_buildkit_max_parallelism }}
+  gc = true
+  reservedSpace = "2GB"
+  maxUsedSpace = "20GB"
+  minFreeSpace = "10GB"
+
+[worker.containerd]
+  enabled = false

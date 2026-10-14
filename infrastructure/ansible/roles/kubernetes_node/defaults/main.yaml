@@ -1,0 +1,14 @@
+---
+lap_kubernetes_deb_version: "{{ versions.kubernetes }}-2.1"
+lap_kubernetes_cni_deb_version: "{{ versions.cni_plugins }}-1.1"
+lap_containerd_archive: "containerd-{{ versions.containerd }}-linux-amd64.tar.gz"
+lap_containerd_sha256: ebf6e710056312628eaf6fb4a1c32f0a4ae5f812568321be4029389d66fc7c7c
+lap_runc_sha256: 177df879d50c913eb205e898d5c1c05a18f574053c0ce5524c471208eaf06f6f
+lap_cni_archive: "cni-plugins-linux-amd64-v{{ versions.cni_plugins }}.tgz"
+lap_cni_sha256: b98f74a0f8522f0a83867178729c1aa70f2158f90c45a2ca8fa791db1c76b303
+lap_kubernetes_packages:
+  - kubeadm
+  - kubectl
+  - kubelet
+  - kubernetes-cni
+

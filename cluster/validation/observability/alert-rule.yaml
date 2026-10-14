@@ -1,0 +1,16 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: lap-observability-validation
+  namespace: monitoring
+spec:
+  groups:
+    - name: lap.validation
+      rules:
+        - alert: LAPObservabilityValidation
+          expr: vector(1)
+          labels:
+            severity: none
+            validation: lap-observability
+          annotations:
+            summary: Disposable observability alert-path validation

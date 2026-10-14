@@ -1,0 +1,153 @@
+lab:
+  name: local-application-platform
+  domain: lab.test
+  application_domain: apps.lab.test
+  timezone: Europe/London
+  physical_host_operating_system: Windows 11 Pro
+  host_virtualisation: Hyper-V
+  administration_environment: WSL2 Ubuntu 24.04 LTS
+  guest_operating_system: Ubuntu Server 24.04 LTS
+
+network:
+  vm_cidr: 10.20.0.0/24
+  vm_gateway: 10.20.0.1
+  bootstrap_dns_servers: [1.1.1.1, 9.9.9.9]
+  api_virtual_ip: 10.20.0.12
+  pod_cidr: 10.244.0.0/16
+  pod_node_cidr_mask: 24
+  service_cidr: 10.96.0.0/16
+  metallb_pool_start: 10.20.0.100
+  metallb_pool_end: 10.20.0.120
+  envoy_gateway_ip: 10.20.0.100
+
+hostnames:
+  platform_api: api.lab.test
+  registry: registry.lab.test
+  build_agent: build-agent.lab.test
+  grafana: grafana.lab.test
+
+registry:
+  implementation: distribution
+  host: registry.lab.test
+  port: 5000
+  image_namespace: apps
+  data_path: /var/lib/lap-registry
+  service_user: lap-registry
+  publisher_identity: lap-registry-publisher
+  pull_identity: lap-registry-puller
+
+build_agent:
+  url: https://build-agent.lab.test:8443
+  port: 8443
+  build_timeout_minutes: 15
+  service_user: lap-build-agent
+  state_path: /var/lib/lap-build-agent
+
+build_host:
+  buildkit_user: lap-buildkit
+  buildkit_state_path: /var/lib/lap-buildkit
+  buildkit_socket: /run/lap-buildkit/buildkitd.sock
+  trivy_cache_path: /var/cache/lap-trivy
+  artifact_path: /var/lib/lap-build-agent/artifacts
+
+postgresql:
+  namespace: platform-database
+  service_name: postgresql
+  database: platform
+  application_user: platform_api
+  storage_class: longhorn
+  storage_size: 10Gi
+
+observability:
+  namespace: monitoring
+  prometheus_retention: 7d
+  prometheus_retention_size: 8GB
+  prometheus_storage_size: 10Gi
+  grafana_storage_size: 2Gi
+  alertmanager_storage_size: 2Gi
+  loki_retention: 72h
+  loki_storage_size: 5Gi
+  tempo_retention: 72h
+  tempo_storage_size: 5Gi
+
+application_defaults:
+  replicas: 2
+  cpu_request: 100m
+  cpu_limit: "1"
+  memory_request: 128Mi
+  memory_limit: 512Mi
+  deployment_deadline_seconds: 600
+
+operations:
+  lease_seconds: 45
+  lease_renewal_seconds: 10
+  max_operations_per_api_pod: 2
+  max_concurrent_builds: 1
+
+hyperv:
+  switch_name: lap-lab
+  nat_name: lap-lab
+  vhd_root_path: C:\Hyper-V\LocalApplicationPlatform\Virtual Hard Disks
+  seed_iso_root_path: C:\Hyper-V\LocalApplicationPlatform\Seed ISOs
+  base_image_source: https://cloud-images.ubuntu.com/releases/noble/release-20260826/ubuntu-24.04-server-cloudimg-amd64-azure.vhd.tar.gz
+  base_image_name: ubuntu-24.04-server-cloudimg-amd64-nocloud-static-60g.vhdx
+  base_image_sha256: 843d243792abb05b50e1a7f5e614e1184d8fc7195c119747cbb3038520258a22
+  base_image_capacity_gib: 60
+  ssh_user: ubuntu
+  ssh_public_key_path: ~/.ssh/lap_lab_ed25519.pub
+
+virtual_machines:
+  - name: lb-1
+    role: load_balancer
+    address: 10.20.0.21
+    vcpu: 1
+    memory_mib: 1024
+    disk_gib: 60
+  - name: lb-2
+    role: load_balancer
+    address: 10.20.0.22
+    vcpu: 1
+    memory_mib: 1024
+    disk_gib: 60
+  - name: cp-1
+    role: control_plane
+    address: 10.20.0.31
+    vcpu: 2
+    memory_mib: 4096
+    disk_gib: 60
+  - name: cp-2
+    role: control_plane
+    address: 10.20.0.32
+    vcpu: 2
+    memory_mib: 4096
+    disk_gib: 60
+  - name: cp-3
+    role: control_plane
+    address: 10.20.0.33
+    vcpu: 2
+    memory_mib: 4096
+    disk_gib: 60
+  - name: worker-1
+    role: worker
+    address: 10.20.0.41
+    vcpu: 4
+    memory_mib: 8192
+    disk_gib: 60
+  - name: worker-2
+    role: worker
+    address: 10.20.0.42
+    vcpu: 4
+    memory_mib: 8192
+    disk_gib: 60
+  - name: worker-3
+    role: worker
+    address: 10.20.0.43
+    vcpu: 4
+    memory_mib: 8192
+    disk_gib: 60
+  - name: build-1
+    role: build
+    address: 10.20.0.51
+    vcpu: 4
+    memory_mib: 8192
+    disk_gib: 60

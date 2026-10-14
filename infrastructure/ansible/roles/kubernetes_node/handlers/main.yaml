@@ -1,0 +1,29 @@
+---
+- name: Apply Kubernetes sysctl settings
+  ansible.builtin.command:
+    argv: [sysctl, --system]
+  changed_when: true
+  listen: apply kubernetes sysctl settings
+
+- name: Reload systemd
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  listen: reload systemd
+
+- name: Restart systemd-resolved
+  ansible.builtin.systemd_service:
+    name: systemd-resolved
+    state: restarted
+  listen: restart systemd-resolved
+
+- name: Restart containerd
+  ansible.builtin.systemd_service:
+    name: containerd
+    state: restarted
+  listen: restart containerd
+
+- name: Reload Kubernetes-node nftables
+  ansible.builtin.systemd_service:
+    name: nftables
+    state: reloaded
+  listen: reload kubernetes node nftables

@@ -1,0 +1,10 @@
+---
+- name: Configure minimal host firewall support for MetalLB
+  hosts: control_planes:workers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Configure MetalLB memberlist firewall allowances
+      ansible.builtin.include_role:
+        name: kubernetes_node
+        tasks_from: networking-firewall.yaml

@@ -1,0 +1,26 @@
+#!/usr/sbin/nft -f
+# Managed by Ansible. The isolated load balancers own only this project table.
+flush ruleset
+
+table inet lap {
+    chain input {
+        type filter hook input priority filter; policy drop;
+        ct state invalid drop
+        ct state established,related accept
+        iifname "lo" accept
+
+        ip saddr { {{ lab.network.vm_cidr }}, {{ lap_admin_address }}/32 } ip protocol icmp accept
+        iifname "{{ lap_lab_interface }}" ip saddr {{ hostvars[groups['load_balancers'] | difference([inventory_hostname]) | first].ansible_host }} ip protocol vrrp accept
+        ip saddr { {{ lab.network.vm_cidr }}, {{ lap_admin_address }}/32 } tcp dport { 22, 53, {{ lap_api_port }} } accept
+        ip saddr { {{ lab.network.vm_cidr }}, {{ lap_admin_address }}/32 } udp dport 53 accept
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}
+

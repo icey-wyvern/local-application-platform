@@ -1,0 +1,3 @@
+# These files execute in WSL even when checked out by Windows Git.
+*.sh text eol=lf
+Makefile text eol=lf

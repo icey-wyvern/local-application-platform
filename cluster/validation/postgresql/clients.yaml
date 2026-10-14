@@ -1,0 +1,85 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: postgresql-validator
+  namespace: postgresql-validation
+  labels:
+    app.kubernetes.io/name: postgresql-validator
+spec:
+  serviceAccountName: postgresql-validator
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    runAsGroup: 999
+    runAsNonRoot: true
+    runAsUser: 999
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: client
+      image: postgres:18.6-bookworm@sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650
+      imagePullPolicy: IfNotPresent
+      command: [sleep, "3600"]
+      env:
+        - name: PGHOST
+          value: postgresql.platform-database.svc.cluster.local
+        - name: PGDATABASE
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-application
+              key: database
+        - name: PGUSER
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-application
+              key: username
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgresql-application
+              key: password
+        - name: PGSSLMODE
+          value: verify-full
+        - name: PGSSLROOTCERT
+          value: /etc/lab-pki/ca.crt
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        readOnlyRootFilesystem: true
+      volumeMounts:
+        - name: root-ca
+          mountPath: /etc/lab-pki
+          readOnly: true
+  volumes:
+    - name: root-ca
+      configMap:
+        name: lab-root-ca
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: postgresql-denied
+  namespace: postgresql-denied
+  labels:
+    app.kubernetes.io/name: postgresql-denied
+spec:
+  serviceAccountName: postgresql-denied
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    runAsGroup: 999
+    runAsNonRoot: true
+    runAsUser: 999
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: client
+      image: postgres:18.6-bookworm@sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650
+      imagePullPolicy: IfNotPresent
+      command: [sleep, "3600"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        readOnlyRootFilesystem: true

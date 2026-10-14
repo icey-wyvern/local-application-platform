@@ -1,0 +1,19 @@
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: envoy-gateway-reserved
+  namespace: metallb-system
+spec:
+  addresses:
+    - 10.20.0.100/32
+  autoAssign: false
+---
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: lab-general
+  namespace: metallb-system
+spec:
+  addresses:
+    - 10.20.0.101-10.20.0.120
+  autoAssign: true

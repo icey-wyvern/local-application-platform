@@ -1,0 +1,61 @@
+---
+- name: Initialize unjoined node lists
+  ansible.builtin.set_fact:
+    lap_unjoined_control_planes: []
+    lap_unjoined_workers: []
+
+- name: Record unjoined control planes
+  ansible.builtin.set_fact:
+    lap_unjoined_control_planes: "{{ lap_unjoined_control_planes + [item] }}"
+  loop: "{{ groups['control_planes'] | reject('equalto', lap_kubeadm_primary) | list }}"
+  when: not hostvars[item].lap_kubeadm_joined
+
+- name: Record unjoined workers
+  ansible.builtin.set_fact:
+    lap_unjoined_workers: "{{ lap_unjoined_workers + [item] }}"
+  loop: "{{ groups['workers'] }}"
+  when: not hostvars[item].lap_kubeadm_joined
+
+- name: Generate one-use control-plane certificate key
+  ansible.builtin.command:
+    argv: [kubeadm, certs, certificate-key]
+  register: lap_certificate_key_command
+  no_log: true
+  when: lap_unjoined_control_planes | length > 0
+
+- name: Upload control-plane certificates using the one-use key
+  ansible.builtin.command:
+    argv:
+      - kubeadm
+      - init
+      - phase
+      - upload-certs
+      - --upload-certs
+      - --certificate-key
+      - "{{ lap_certificate_key_command.stdout | trim }}"
+  no_log: true
+  when: lap_unjoined_control_planes | length > 0
+
+- name: Create a short-lived bootstrap token
+  ansible.builtin.command:
+    argv:
+      - kubeadm
+      - token
+      - create
+      - --ttl
+      - "{{ lap_kubeadm_token_ttl }}"
+      - --print-join-command
+  register: lap_join_command
+  no_log: true
+  when: (lap_unjoined_control_planes + lap_unjoined_workers) | length > 0
+
+- name: Record ephemeral join material in memory
+  ansible.builtin.set_fact:
+    lap_join_token: >-
+      {{ (lap_join_command.stdout.split('--token ')[1]).split()[0] }}
+    lap_join_ca_hash: >-
+      {{ (lap_join_command.stdout.split('--discovery-token-ca-cert-hash ')[1]).split()[0] }}
+    lap_control_plane_certificate_key: >-
+      {{ lap_certificate_key_command.stdout | default('') | trim }}
+  no_log: true
+  when: (lap_unjoined_control_planes + lap_unjoined_workers) | length > 0

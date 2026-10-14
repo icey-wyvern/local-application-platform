@@ -1,0 +1,16 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: tls-smoke
+  namespace: tls-validation
+spec:
+  hostnames:
+    - tls-smoke.apps.lab.test
+  parentRefs:
+    - name: platform
+      namespace: envoy-gateway-system
+      sectionName: https
+  rules:
+    - backendRefs:
+        - name: tls-smoke
+          port: 8080

@@ -1,0 +1,9 @@
+---
+- name: Distribute the shared encryption configuration to control planes
+  ansible.builtin.copy:
+    content: "{{ hostvars[lap_kubeadm_primary].lap_encryption_config.content | b64decode }}"
+    dest: "{{ lap_kubeadm_encryption_config_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true

@@ -1,0 +1,32 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: platform
+  namespace: envoy-gateway-system
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      envoyDeployment:
+        replicas: 2
+        pod:
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: node-role.kubernetes.io/control-plane
+                        operator: DoesNotExist
+          topologySpreadConstraints:
+            - labelSelector:
+                matchLabels:
+                  gateway.envoyproxy.io/owning-gateway-name: platform
+              maxSkew: 1
+              topologyKey: kubernetes.io/hostname
+              whenUnsatisfiable: DoNotSchedule
+      envoyService:
+        annotations:
+          metallb.io/address-pool: envoy-gateway-reserved
+          metallb.io/loadBalancerIPs: 10.20.0.100
+        externalTrafficPolicy: Cluster
+        type: LoadBalancer

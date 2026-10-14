@@ -1,0 +1,17 @@
+# Managed by Ansible.
+port=53
+listen-address={{ lab.network.api_virtual_ip }}
+bind-dynamic
+domain-needed
+bogus-priv
+no-resolv
+cache-size=1000
+local=/{{ lab.lab.domain }}/
+{% for upstream in lap_dns_upstreams %}
+server={{ upstream }}
+{% endfor %}
+{% for record in lap_dns_records %}
+host-record={{ record.name }},{{ record.address }}
+{% endfor %}
+address=/{{ lab.lab.application_domain }}/{{ lab.network.envoy_gateway_ip }}
+

@@ -1,0 +1,384 @@
+---
+- name: Validate the private registry and build-host foundation
+  hosts: build_machines
+  become: true
+  gather_facts: false
+  vars:
+    lap_buildkit_shared_group: lap-build
+    lap_smoke_name: foundation-smoke
+    lap_smoke_tag: build-part-one
+    lap_smoke_workspace: "{{ lab.build_agent.state_path }}/workspaces/build-part-one-smoke"
+    lap_smoke_archive: "{{ lab.build_host.artifact_path }}/build-part-one-smoke.oci.tar"
+    lap_smoke_layout: "{{ lab.build_agent.state_path }}/workspaces/build-part-one-smoke-oci"
+    lap_smoke_pull_archive: "{{ lab.build_host.artifact_path }}/build-part-one-pull.oci.tar"
+    lap_smoke_report: "{{ lab.build_agent.state_path }}/results/build-part-one-trivy.json"
+    lap_registry_reference: >-
+      {{ lab.registry.host }}:{{ lab.registry.port }}/{{ lab.registry.image_namespace }}/{{ lap_smoke_name }}:{{ lap_smoke_tag }}
+    lap_registry_publisher_password: >-
+      {{ lookup('ansible.builtin.password',
+                lookup('ansible.builtin.env', 'BUILD_HOST_SECRET_DIR') + '/registry-publisher-password',
+                length=40, chars=['ascii_letters', 'digits']) }}
+    lap_registry_pull_password: >-
+      {{ lookup('ansible.builtin.password',
+                lookup('ansible.builtin.env', 'BUILD_HOST_SECRET_DIR') + '/registry-puller-password',
+                length=40, chars=['ascii_letters', 'digits']) }}
+  tasks:
+    - name: Read installed component versions
+      ansible.builtin.command:
+        argv: "{{ item }}"
+      loop:
+        - ["/opt/lap/registry/{{ versions.registry }}/registry", --version]
+        - ["/opt/lap/buildkit/{{ versions.buildkit }}/buildkitd", --version]
+        - [/usr/local/bin/skopeo, --version]
+        - [/usr/local/bin/trivy, --version]
+      register: lap_build_versions
+      changed_when: false
+
+    - name: Assert exact component versions
+      ansible.builtin.assert:
+        that:
+          - versions.registry in lap_build_versions.results[0].stdout
+          - versions.buildkit in lap_build_versions.results[1].stdout
+          - versions.skopeo in lap_build_versions.results[2].stdout
+          - versions.trivy in lap_build_versions.results[3].stdout
+
+    - name: Read build-host service state
+      ansible.builtin.command:
+        argv: [systemctl, is-active, "{{ item }}"]
+      loop: [nftables, lap-registry, lap-buildkit]
+      register: lap_build_service_state
+      changed_when: false
+
+    - name: Assert build-host services are active
+      ansible.builtin.assert:
+        that: lap_build_service_state.results | map(attribute='stdout') | unique == ['active']
+
+    - name: Inspect BuildKit service isolation and resource controls
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - show
+          - lap-buildkit
+          - --property=User,Group,ControlGroup,Delegate,CPUQuotaPerSecUSec,MemoryMax,IPAddressDeny,IPAddressAllow
+      register: lap_buildkit_unit
+      changed_when: false
+
+    - name: Assert BuildKit runs rootlessly in its filtered systemd cgroup
+      ansible.builtin.assert:
+        that:
+          - "('User=' + lab.build_host.buildkit_user) in lap_buildkit_unit.stdout"
+          - "('Group=' + lap_buildkit_shared_group) in lap_buildkit_unit.stdout"
+          - "'Delegate=yes' in lap_buildkit_unit.stdout"
+          - "'MemoryMax=6442450944' in lap_buildkit_unit.stdout"
+          - "'10.0.0.0/8' in lap_buildkit_unit.stdout"
+          - "'192.168.0.0/16' in lap_buildkit_unit.stdout"
+
+    - name: Query rootless BuildKit worker
+      ansible.builtin.command:
+        argv: [buildctl, --addr, "unix://{{ lab.build_host.buildkit_socket }}", debug, workers, --verbose]
+      become_user: "{{ lab.build_agent.service_user }}"
+      register: lap_buildkit_workers
+      changed_when: false
+
+    - name: Assert OCI worker uses the rootless native snapshotter
+      ansible.builtin.assert:
+        that:
+          - "lap_buildkit_workers.stdout is search('org.mobyproject.buildkit.worker.executor:\\s+oci')"
+          - "lap_buildkit_workers.stdout is search('org.mobyproject.buildkit.worker.snapshotter:\\s+native')"
+          - "lap_buildkit_workers.stdout is search('org.mobyproject.buildkit.worker.oci.process-mode:\\s+no-sandbox')"
+
+    - name: Create isolated smoke build workspace
+      ansible.builtin.file:
+        path: "{{ lap_smoke_workspace }}"
+        state: directory
+        owner: "{{ lab.build_agent.service_user }}"
+        group: "{{ lab.build_agent.service_user }}"
+        mode: "0700"
+
+    - name: Install deterministic smoke build inputs
+      ansible.builtin.copy:
+        dest: "{{ lap_smoke_workspace }}/{{ item.name }}"
+        content: "{{ item.content }}"
+        owner: "{{ lab.build_agent.service_user }}"
+        group: "{{ lab.build_agent.service_user }}"
+        mode: "0600"
+      loop:
+        - name: Dockerfile
+          content: |
+            FROM alpine:3.22.1
+            RUN apk add --no-cache ca-certificates curl
+            RUN curl --fail --silent --show-error https://example.com/ >/public-internet-ok
+            RUN ! nc -z -w 3 {{ lab.network.api_virtual_ip }} 6443
+            RUN ! nc -z -w 3 {{ ansible_host }} {{ lab.registry.port }}
+            COPY payload.txt /foundation-payload.txt
+        - name: payload.txt
+          content: "local-application-platform build-part-one exact artifact\n"
+
+    - name: Build the isolated OCI archive
+      ansible.builtin.command:
+        argv:
+          - buildctl
+          - --addr
+          - "unix://{{ lab.build_host.buildkit_socket }}"
+          - build
+          - --frontend
+          - dockerfile.v0
+          - --local
+          - "context={{ lap_smoke_workspace }}"
+          - --local
+          - "dockerfile={{ lap_smoke_workspace }}"
+          - --output
+          - "type=oci,dest={{ lap_smoke_archive }},name={{ lap_smoke_name }}:{{ lap_smoke_tag }}"
+      become_user: "{{ lab.build_agent.service_user }}"
+      register: lap_smoke_build
+      changed_when: true
+
+    - name: Hash exact archive before scanning
+      ansible.builtin.command:
+        argv: [sha256sum, "{{ lap_smoke_archive }}"]
+      become_user: "{{ lab.build_agent.service_user }}"
+      register: lap_archive_hash_before
+      changed_when: false
+
+    # Trivy accepts an unpacked OCI image layout, not an OCI-layout tar. This
+    # extracts the immutable archive without converting or rebuilding it; the
+    # original archive is subsequently published and its digest is compared.
+    - name: Reset extracted OCI scan layout
+      ansible.builtin.file:
+        path: "{{ lap_smoke_layout }}"
+        state: absent
+
+    - name: Create extracted OCI scan layout
+      ansible.builtin.file:
+        path: "{{ lap_smoke_layout }}"
+        state: directory
+        owner: "{{ lab.build_agent.service_user }}"
+        group: "{{ lab.build_agent.service_user }}"
+        mode: "0700"
+
+    - name: Extract exact OCI archive for Trivy
+      ansible.builtin.unarchive:
+        src: "{{ lap_smoke_archive }}"
+        dest: "{{ lap_smoke_layout }}"
+        remote_src: true
+        owner: "{{ lab.build_agent.service_user }}"
+        group: "{{ lab.build_agent.service_user }}"
+
+    - name: Scan exact OCI content to machine-readable JSON
+      ansible.builtin.command:
+        argv:
+          - trivy
+          - image
+          - --input
+          - "{{ lap_smoke_layout }}"
+          - --cache-dir
+          - "{{ lab.build_host.trivy_cache_path }}"
+          - --format
+          - json
+          - --output
+          - "{{ lap_smoke_report }}"
+          - --scanners
+          - vuln
+          - --quiet
+      become_user: "{{ lab.build_agent.service_user }}"
+      changed_when: true
+
+    - name: Hash exact archive after scanning
+      ansible.builtin.command:
+        argv: [sha256sum, "{{ lap_smoke_archive }}"]
+      become_user: "{{ lab.build_agent.service_user }}"
+      register: lap_archive_hash_after
+      changed_when: false
+
+    - name: Assert scan did not mutate the artifact and emitted JSON
+      ansible.builtin.shell:
+        cmd: >-
+          test "{{ lap_archive_hash_before.stdout.split()[0] }}" = "{{ lap_archive_hash_after.stdout.split()[0] }}"
+          && python3 -m json.tool {{ lap_smoke_report }} >/dev/null
+      become_user: "{{ lab.build_agent.service_user }}"
+      changed_when: false
+
+    - name: Authenticate Skopeo publisher without command-line credentials
+      ansible.builtin.command:
+        argv:
+          - skopeo
+          - login
+          - --authfile
+          - "{{ lab.build_agent.state_path }}/registry-auth.json"
+          - --username
+          - "{{ lab.registry.publisher_identity }}"
+          - --password-stdin
+          - "{{ lab.registry.host }}:{{ lab.registry.port }}"
+        stdin: "{{ lap_registry_publisher_password }}"
+      become_user: "{{ lab.build_agent.service_user }}"
+      no_log: true
+      changed_when: false
+
+    - name: Read scanned source manifest digest
+      ansible.builtin.command:
+        argv:
+          - skopeo
+          - --override-os
+          - linux
+          - inspect
+          - --format
+          - "{{ '{{.Digest}}' }}"
+          - "oci-archive:{{ lap_smoke_archive }}"
+      become_user: "{{ lab.build_agent.service_user }}"
+      register: lap_scanned_manifest_digest
+      changed_when: false
+
+    - name: Publish the already-scanned OCI archive
+      ansible.builtin.command:
+        argv:
+          - skopeo
+          - copy
+          - --authfile
+          - "{{ lab.build_agent.state_path }}/registry-auth.json"
+          - --preserve-digests
+          - "oci-archive:{{ lap_smoke_archive }}"
+          - "docker://{{ lap_registry_reference }}"
+      become_user: "{{ lab.build_agent.service_user }}"
+      changed_when: true
+
+    - name: Read published registry manifest digest
+      ansible.builtin.command:
+        argv:
+          - skopeo
+          - inspect
+          - --authfile
+          - "{{ lab.build_agent.state_path }}/registry-auth.json"
+          - --format
+          - "{{ '{{.Digest}}' }}"
+          - "docker://{{ lap_registry_reference }}"
+      become_user: "{{ lab.build_agent.service_user }}"
+      register: lap_published_manifest_digest
+      changed_when: false
+
+    - name: Assert scanned and published manifest identity
+      ansible.builtin.assert:
+        that:
+          - lap_scanned_manifest_digest.stdout is match('^sha256:[0-9a-f]{64}$')
+          - lap_scanned_manifest_digest.stdout == lap_published_manifest_digest.stdout
+
+    - name: Validate anonymous and wrong-password registry denial
+      ansible.builtin.command:
+        argv: "{{ item }}"
+      loop:
+        - [curl, --silent, --output, /dev/null, --write-out, '%{http_code}', "https://{{ lab.registry.host }}:{{ lab.registry.port }}/v2/_catalog"]
+        - [curl, --silent, --output, /dev/null, --write-out, '%{http_code}', --user, wrong:wrong, "https://{{ lab.registry.host }}:{{ lab.registry.port }}/v2/_catalog"]
+      register: lap_registry_denials
+      changed_when: false
+      failed_when: false
+
+    - name: Assert anonymous and invalid credentials are rejected
+      ansible.builtin.assert:
+        that: lap_registry_denials.results | map(attribute='stdout') | unique == ['401']
+
+    - name: Validate registry TLS identity and chain
+      ansible.builtin.shell:
+        cmd: >-
+          openssl s_client -connect {{ lab.registry.host }}:{{ lab.registry.port }}
+          -servername {{ lab.registry.host }} -verify_hostname {{ lab.registry.host }}
+          -verify_return_error </dev/null 2>&1
+      register: lap_registry_tls
+      changed_when: false
+
+    - name: Assert registry TLS verification succeeded
+      ansible.builtin.assert:
+        that: "'Verify return code: 0 (ok)' in lap_registry_tls.stdout"
+
+    - name: Authenticate the distinct pull identity
+      ansible.builtin.command:
+        argv:
+          - skopeo
+          - login
+          - --authfile
+          - "{{ lab.build_agent.state_path }}/registry-pull-auth.json"
+          - --username
+          - "{{ lab.registry.pull_identity }}"
+          - --password-stdin
+          - "{{ lab.registry.host }}:{{ lab.registry.port }}"
+        stdin: "{{ lap_registry_pull_password }}"
+      become_user: "{{ lab.build_agent.service_user }}"
+      no_log: true
+      changed_when: false
+
+    - name: Pull with the distinct authenticated identity
+      ansible.builtin.command:
+        argv:
+          - skopeo
+          - copy
+          - --authfile
+          - "{{ lab.build_agent.state_path }}/registry-pull-auth.json"
+          - "docker://{{ lap_registry_reference }}"
+          - "oci-archive:{{ lap_smoke_pull_archive }}"
+      become_user: "{{ lab.build_agent.service_user }}"
+      changed_when: true
+
+    - name: Restart registry to prove persistence
+      ansible.builtin.systemd_service:
+        name: lap-registry
+        state: restarted
+
+    - name: Wait for registry after restart
+      ansible.builtin.wait_for:
+        host: "{{ ansible_host }}"
+        port: "{{ lab.registry.port }}"
+        timeout: 30
+
+    - name: Read digest after registry restart
+      ansible.builtin.command:
+        argv:
+          - skopeo
+          - inspect
+          - --authfile
+          - "{{ lab.build_agent.state_path }}/registry-pull-auth.json"
+          - --format
+          - "{{ '{{.Digest}}' }}"
+          - "docker://{{ lap_registry_reference }}"
+      become_user: "{{ lab.build_agent.service_user }}"
+      register: lap_persistent_manifest_digest
+      changed_when: false
+
+    - name: Assert registry artifact survived restart
+      ansible.builtin.assert:
+        that: lap_persistent_manifest_digest.stdout == lap_published_manifest_digest.stdout
+
+    - name: Restart rootless BuildKit
+      ansible.builtin.systemd_service:
+        name: lap-buildkit
+        state: restarted
+
+    - name: Wait for private BuildKit socket after restart
+      ansible.builtin.wait_for:
+        path: "{{ lab.build_host.buildkit_socket }}"
+        timeout: 30
+
+    - name: Re-query BuildKit after restart
+      ansible.builtin.command:
+        argv: [buildctl, --addr, "unix://{{ lab.build_host.buildkit_socket }}", debug, workers, --verbose]
+      become_user: "{{ lab.build_agent.service_user }}"
+      changed_when: false
+
+    - name: Inspect firewall and listening sockets
+      ansible.builtin.shell:
+        cmd: nft list table inet lap && printf '\nLISTENERS\n' && ss -H -lntup
+      register: lap_build_exposure
+      changed_when: false
+
+    - name: Assert default-deny firewall and scoped listeners
+      ansible.builtin.assert:
+        that:
+          - "'policy drop' in lap_build_exposure.stdout"
+          - "(':' + (lab.registry.port | string)) in lap_build_exposure.stdout"
+          - "lab.build_host.buildkit_socket not in lap_build_exposure.stdout"
+          - "('0.0.0.0:' + (lab.registry.port | string)) not in lap_build_exposure.stdout"
+          - "('[::]:' + (lab.registry.port | string)) not in lap_build_exposure.stdout"
+
+    - name: Report validated artifact identity
+      ansible.builtin.debug:
+        msg:
+          archive_sha256: "{{ lap_archive_hash_after.stdout.split()[0] }}"
+          manifest_digest: "{{ lap_published_manifest_digest.stdout }}"
+          registry_reference: "{{ lap_registry_reference }}@{{ lap_published_manifest_digest.stdout }}"

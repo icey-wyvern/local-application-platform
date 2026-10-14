@@ -1,0 +1,11 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: platform-controller-kubernetes-api
+  namespace: platform-system
+spec:
+  endpointSelector:
+    matchLabels:
+      k8s:app.kubernetes.io/name: platform-controller
+  egress:
+    - toEntities: [kube-apiserver]

@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: platform-controller
+  namespace: platform-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: platform-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: platform-controller
+    spec:
+      serviceAccountName: platform-controller
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: platform-controller
+          image: registry.lab.test:5000/platform/platform-controller@sha256:725849563c6e71d9794b24432b92429ffa6a82c511a6d39a7894d2fead25d580
+          imagePullPolicy: IfNotPresent
+          args:
+            - --metrics-bind-address=:8080
+            - --health-probe-bind-address=:8081
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://opentelemetry-collector.monitoring.svc.cluster.local:4318
+            - name: REGISTRY_DOCKER_CONFIG_PATH
+              value: /var/run/secrets/platform-controller/registry/.dockerconfigjson
+            - name: LAB_ROOT_CA_PATH
+              value: /var/run/platform-controller/ca/lab-root-ca.crt
+          ports:
+            - {name: metrics, containerPort: 8080}
+            - {name: health, containerPort: 8081}
+          readinessProbe:
+            httpGet: {path: /readyz, port: health}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: {path: /healthz, port: health}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+            runAsUser: 65532
+            runAsGroup: 65532
+          volumeMounts:
+            - name: registry-credentials
+              mountPath: /var/run/secrets/platform-controller/registry
+              readOnly: true
+            - name: lab-root-ca
+              mountPath: /var/run/platform-controller/ca
+              readOnly: true
+      volumes:
+        - name: registry-credentials
+          secret:
+            secretName: platform-controller-registry
+            defaultMode: 288
+            items:
+              - key: .dockerconfigjson
+                path: .dockerconfigjson
+        - name: lab-root-ca
+          configMap:
+            name: platform-controller-lab-root-ca

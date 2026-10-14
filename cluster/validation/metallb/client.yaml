@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: metallb-client
+  namespace: metallb-validation
+spec:
+  automountServiceAccountToken: false
+  containers:
+    - name: client
+      image: busybox:1.37.0
+      command: [sleep, "3600"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault

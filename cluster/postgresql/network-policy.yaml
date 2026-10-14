@@ -1,0 +1,20 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: postgresql-ingress
+  namespace: platform-database
+spec:
+  description: Permit only the future platform API identity to use PostgreSQL.
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform-system
+            io.cilium.k8s.policy.serviceaccount: platform-api
+            k8s:app.kubernetes.io/name: platform-api
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP

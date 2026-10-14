@@ -1,0 +1,20 @@
+---
+- name: Validate scoped host metrics access
+  hosts: control_planes:workers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read project firewall table
+      ansible.builtin.command:
+        argv: [nft, list, table, inet, lap]
+      register: lap_observability_firewall
+      changed_when: false
+
+    - name: Assert metrics ports are limited to the pod network
+      ansible.builtin.assert:
+        that:
+          - lap_observability_firewall.stdout.count('policy drop') == 2
+          - >-
+            ('tcp dport { 9100, 10250 } accept') in lap_observability_firewall.stdout
+          - "('ip saddr ' + lab.network.pod_cidr) in lap_observability_firewall.stdout"
+        fail_msg: Prometheus host metrics access escaped the intended pod-network scope.

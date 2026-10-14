@@ -1,0 +1,3 @@
+name: build-agent-failure
+port: 8080
+healthPath: /health

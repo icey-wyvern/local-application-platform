@@ -1,0 +1,73 @@
+---
+- name: Validate Longhorn worker preparation scope
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname in groups['workers']
+      - lap_role == 'worker'
+      - groups['workers'] | length == 3
+      - versions.longhorn == '1.12.1'
+    fail_msg: Longhorn host preparation is restricted to the three generated workers.
+
+- name: Install Longhorn V1 host prerequisites
+  ansible.builtin.apt:
+    name: "{{ lap_longhorn_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Configure Longhorn V1 kernel module
+  ansible.builtin.template:
+    src: modules.conf.j2
+    dest: /etc/modules-load.d/longhorn.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: load longhorn kernel modules
+
+- name: Check whether Longhorn kernel modules are loaded
+  ansible.builtin.stat:
+    path: "/sys/module/{{ item }}"
+  loop: "{{ lap_longhorn_kernel_modules }}"
+  register: lap_longhorn_modules
+
+- name: Load Longhorn kernel modules
+  ansible.builtin.command:
+    argv: [modprobe, "{{ item.item }}"]
+  loop: "{{ lap_longhorn_modules.results }}"
+  when: not item.stat.exists
+  changed_when: true
+
+- name: Disable unused multipath services to protect Longhorn devices
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: false
+    masked: true
+    state: stopped
+  loop:
+    - multipathd.service
+    - multipathd.socket
+
+- name: Create the non-destructive Longhorn data directory
+  ansible.builtin.file:
+    path: "{{ lap_longhorn_data_path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Enable and start the iSCSI initiator daemon
+  ansible.builtin.systemd_service:
+    name: iscsid
+    enabled: true
+    state: started
+
+- name: Apply pending module handler
+  ansible.builtin.meta: flush_handlers
+
+- name: Re-render the project firewall with Longhorn worker allowances
+  ansible.builtin.include_role:
+    name: kubernetes_node
+    tasks_from: networking-firewall
+
+- name: Apply pending firewall handler
+  ansible.builtin.meta: flush_handlers

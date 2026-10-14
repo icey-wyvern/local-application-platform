@@ -1,0 +1,16 @@
+[project]
+name = "lap-config"
+version = "1.0.0"
+description = "Configuration validator and generator for Local Application Platform."
+requires-python = ">=3.14,<3.15"
+dependencies = [
+  "pydantic==2.12.4",
+  "pyyaml==6.0.2",
+]
+
+[project.scripts]
+lap-config = "lap_config.cli:main"
+
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"

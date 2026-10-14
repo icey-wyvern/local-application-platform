@@ -1,0 +1,13 @@
+---
+lap_longhorn_data_path: /var/lib/longhorn
+lap_longhorn_supported_filesystems:
+  - ext4
+  - xfs
+lap_longhorn_packages:
+  - cryptsetup
+  - dmsetup
+  - nfs-common
+  - open-iscsi
+lap_longhorn_kernel_modules:
+  - dm_crypt
+  - iscsi_tcp

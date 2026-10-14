@@ -1,0 +1,3 @@
+[Resolve]
+DNS={{ lab.network.api_virtual_ip }}{% for server in lab.network.bootstrap_dns_servers %} {{ server }}{% endfor %}
+Domains=~.

@@ -1,0 +1,12 @@
+---
+- name: Install lab root certificate in the system trust store
+  ansible.builtin.copy:
+    src: "{{ lap_root_certificate_source }}"
+    dest: /usr/local/share/ca-certificates/lap-root-ca.crt
+    owner: root
+    group: root
+    mode: "0644"
+  notify: update lab root trust
+
+- name: Flush root trust update before HTTPS validation
+  ansible.builtin.meta: flush_handlers

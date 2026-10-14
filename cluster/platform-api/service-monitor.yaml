@@ -1,0 +1,15 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: platform-api
+  namespace: monitoring
+spec:
+  namespaceSelector:
+    matchNames: [platform-system]
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: platform-api
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s

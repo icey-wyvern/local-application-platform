@@ -1,0 +1,4 @@
+name: INVALID_NAME
+port: 80
+healthPath: https://internal.test/health?unsafe=true
+unknown: rejected

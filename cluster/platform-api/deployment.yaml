@@ -1,0 +1,98 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: platform-api
+  namespace: platform-system
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: platform-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: platform-api
+    spec:
+      serviceAccountName: platform-api
+      hostAliases:
+        - ip: 10.20.0.51
+          hostnames:
+            - build-agent.lab.test
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: platform-api
+      containers:
+        - name: platform-api
+          image: registry.lab.test:5000/platform/platform-api@sha256:ec19c685b5f4fd9b48af26609831e11f3337d42c437597b10206021a6af262ae
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - {name: LAP_API_LISTEN_HOST, value: "0.0.0.0"}
+            - {name: LAP_SCHEDULER_NOOP_DELAY_SECONDS, value: "15"}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef: {fieldPath: metadata.name}
+            - {name: POSTGRESQL_HOST, value: postgresql.platform-database.svc.cluster.local}
+            - {name: POSTGRESQL_DATABASE, value: platform}
+            - {name: POSTGRESQL_APPLICATION_USER, value: platform_api}
+            - {name: POSTGRESQL_SSL_ROOT_CERT, value: /var/run/platform-api/ca/lab-root-ca.crt}
+            - {name: BUILD_AGENT_URL, value: "https://build-agent.lab.test:8443"}
+            - {name: BUILD_AGENT_CA_CERTIFICATE, value: /var/run/platform-api/build-agent/ca.crt}
+            - {name: BUILD_AGENT_CLIENT_CERTIFICATE, value: /var/run/platform-api/build-agent/tls.crt}
+            - {name: BUILD_AGENT_CLIENT_KEY, value: /var/run/platform-api/build-agent/tls.key}
+            - {name: APPLICATION_DOMAIN, value: apps.lab.test}
+            - {name: KUBERNETES_DEPLOYMENT_TIMEOUT_SECONDS, value: "300"}
+            - {name: EXTERNAL_HEALTH_TIMEOUT_SECONDS, value: "5"}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://opentelemetry-collector.monitoring.svc.cluster.local:4318"}
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: platform-api, key: postgresql-password}
+            - name: LAP_API_TOKEN_SHA256
+              valueFrom:
+                secretKeyRef: {name: platform-api, key: token-sha256}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 4
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+            runAsUser: 65532
+            runAsGroup: 65532
+          volumeMounts:
+            - {name: lab-root-ca, mountPath: /var/run/platform-api/ca, readOnly: true}
+            - {name: build-agent-mtls, mountPath: /var/run/platform-api/build-agent, readOnly: true}
+      volumes:
+        - name: lab-root-ca
+          configMap: {name: platform-api-lab-root-ca}
+        - name: build-agent-mtls
+          secret: {secretName: platform-api-build-agent-mtls, defaultMode: 0440}

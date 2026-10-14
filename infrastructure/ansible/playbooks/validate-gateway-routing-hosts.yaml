@@ -1,0 +1,31 @@
+---
+- name: Validate lab-host DNS and Envoy Gateway routing
+  hosts: load_balancers:control_planes:workers:build_machines
+  gather_facts: false
+  vars:
+    lap_gateway_validation_hostname: "gateway-smoke.{{ lab.lab.application_domain }}"
+  tasks:
+    - name: Resolve temporary application hostname through lab DNS
+      ansible.builtin.script:
+        cmd: >-
+          files/query_dns.py
+          {{ lab.network.api_virtual_ip }}
+          {{ lap_gateway_validation_hostname }}
+          {{ lab.network.envoy_gateway_ip }}
+        executable: python3
+      changed_when: false
+
+    - name: Request temporary application through Envoy Gateway
+      ansible.builtin.uri:
+        url: "http://{{ lab.network.envoy_gateway_ip }}/"
+        headers:
+          Host: "{{ lap_gateway_validation_hostname }}"
+        return_content: true
+        status_code: 200
+        use_proxy: false
+      register: lap_gateway_response
+
+    - name: Assert response came from a validation backend
+      ansible.builtin.assert:
+        that:
+          - lap_gateway_response.content is match('^gateway-smoke-[a-z0-9-]+\\n?$')

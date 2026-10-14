@@ -1,0 +1,10 @@
+---
+- name: Trust the lab root CA on all lab hosts
+  hosts: load_balancers:control_planes:workers:build_machines
+  become: true
+  gather_facts: false
+  vars:
+    lap_root_certificate_source: >-
+      {{ playbook_dir }}/../../../.generated/pki/lab-root-ca.crt
+  roles:
+    - lab_root_trust

@@ -1,0 +1,8 @@
+---
+- name: Prepare Kubernetes control-plane and worker nodes
+  hosts: control_planes:workers
+  become: true
+  gather_facts: true
+  roles:
+    - role: kubernetes_node
+

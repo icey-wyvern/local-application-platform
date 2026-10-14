@@ -1,0 +1,149 @@
+---
+- name: Inspect Kubernetes nodes before bootstrap
+  hosts: control_planes:workers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Inspect kubeadm state
+      ansible.builtin.include_role:
+        name: kubeadm_cluster
+        tasks_from: inspect
+
+- name: Initialize the primary control plane
+  hosts: cp-1
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Configure and initialize primary
+      ansible.builtin.include_role:
+        name: kubeadm_cluster
+        tasks_from: primary
+
+- name: Distribute encryption configuration to all control planes
+  hosts: control_planes
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Install encryption configuration
+      ansible.builtin.include_role:
+        name: kubeadm_cluster
+        tasks_from: distribute-encryption
+
+- name: Refresh kubeadm state after primary initialization
+  hosts: control_planes:workers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Refresh kubeadm state
+      ansible.builtin.include_role:
+        name: kubeadm_cluster
+        tasks_from: inspect
+
+- name: Mint ephemeral join material
+  hosts: cp-1
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Prepare short-lived join credentials
+      ansible.builtin.include_role:
+        name: kubeadm_cluster
+        tasks_from: join-material
+
+- name: Join remaining stacked-etcd control planes one at a time
+  hosts: control_planes:!cp-1
+  serial: 1
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Join control plane when not already joined
+      ansible.builtin.include_role:
+        name: kubeadm_cluster
+        tasks_from: join-control-plane
+      when: not lap_kubeadm_joined
+
+- name: Join workers
+  hosts: workers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Join worker when not already joined
+      ansible.builtin.include_role:
+        name: kubeadm_cluster
+        tasks_from: join-worker
+      when: not lap_kubeadm_joined
+
+- name: Remove bootstrap token and read final administrator kubeconfig
+  hosts: cp-1
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Remove ephemeral token
+      ansible.builtin.include_role:
+        name: kubeadm_cluster
+        tasks_from: cleanup-token
+
+    - name: Read final administrator kubeconfig
+      ansible.builtin.slurp:
+        src: /etc/kubernetes/admin.conf
+      register: lap_final_admin_kubeconfig
+      no_log: true
+
+- name: Configure secure WSL administration
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+  vars:
+    lap_wsl_home: "{{ lookup('env', 'HOME') }}"
+    lap_wsl_kubectl_path: "{{ lap_wsl_home }}/.local/bin/kubectl"
+    lap_wsl_kubeconfig_path: "{{ lap_wsl_home }}/.kube/lap-admin.conf"
+  tasks:
+    - name: Create private WSL administration directories
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        mode: "{{ item.mode }}"
+      loop:
+        - path: "{{ lap_wsl_home }}/.local/bin"
+          mode: "0755"
+        - path: "{{ lap_wsl_home }}/.kube"
+          mode: "0700"
+
+    - name: Install the pinned verified kubectl client in WSL
+      ansible.builtin.get_url:
+        url: >-
+          https://dl.k8s.io/release/v{{ versions.kubernetes }}/bin/linux/amd64/kubectl
+        dest: "{{ lap_wsl_kubectl_path }}"
+        checksum: >-
+          sha256:https://dl.k8s.io/release/v{{ versions.kubernetes }}/bin/linux/amd64/kubectl.sha256
+        mode: "0755"
+
+    - name: Store the administrator kubeconfig outside the repository
+      ansible.builtin.copy:
+        content: >-
+          {{ hostvars['cp-1'].lap_final_admin_kubeconfig.content | b64decode }}
+        dest: "{{ lap_wsl_kubeconfig_path }}"
+        mode: "0600"
+      no_log: true
+
+    - name: Read kubeconfig control-plane endpoint
+      ansible.builtin.command:
+        argv:
+          - "{{ lap_wsl_kubectl_path }}"
+          - --kubeconfig
+          - "{{ lap_wsl_kubeconfig_path }}"
+          - config
+          - view
+          - --minify
+          - -o
+          - jsonpath={.clusters[0].cluster.server}
+      register: lap_kubeconfig_server
+      changed_when: false
+
+    - name: Assert WSL uses the HA endpoint
+      ansible.builtin.assert:
+        that:
+          - >-
+            lap_kubeconfig_server.stdout
+            == 'https://' + lab.network.api_virtual_ip + ':6443'
+        fail_msg: The exported WSL kubeconfig does not use the HA control-plane VIP.

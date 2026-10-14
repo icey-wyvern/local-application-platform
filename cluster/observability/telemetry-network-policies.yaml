@@ -1,0 +1,113 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: opentelemetry-collector
+  namespace: monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: opentelemetry-collector
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              telemetry.lap.dev/otlp: enabled
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: opentelemetry-collector
+      ports:
+        - {port: 4317, protocol: TCP}
+        - {port: 4318, protocol: TCP}
+    - from:
+        - ipBlock:
+            cidr: 10.20.0.51/32
+      ports:
+        - {port: 4318, protocol: TCP}
+    - from:
+        - podSelector:
+            matchLabels:
+              prometheus: kube-prometheus-stack-prometheus
+      ports:
+        - {port: 8888, protocol: TCP}
+        - {port: 8889, protocol: TCP}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: loki
+      ports:
+        - {port: 3100, protocol: TCP}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: tempo
+      ports:
+        - {port: 4318, protocol: TCP}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {port: 53, protocol: UDP}
+        - {port: 53, protocol: TCP}
+    - to:
+        - ipBlock:
+            cidr: 10.96.0.1/32
+      ports:
+        - {port: 443, protocol: TCP}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: loki
+  namespace: monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: loki
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: opentelemetry-collector
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: grafana
+        - podSelector:
+            matchLabels:
+              prometheus: kube-prometheus-stack-prometheus
+      ports:
+        - {port: 3100, protocol: TCP}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tempo
+  namespace: monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: tempo
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: opentelemetry-collector
+      ports:
+        - {port: 4317, protocol: TCP}
+        - {port: 4318, protocol: TCP}
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: grafana
+        - podSelector:
+            matchLabels:
+              prometheus: kube-prometheus-stack-prometheus
+      ports:
+        - {port: 3200, protocol: TCP}

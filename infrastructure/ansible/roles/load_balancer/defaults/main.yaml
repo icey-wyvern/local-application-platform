@@ -1,0 +1,25 @@
+---
+lap_api_port: 6443
+lap_keepalived_virtual_router_id: 51
+lap_keepalived_priorities:
+  lb-1: 150
+  lb-2: 100
+lap_dns_upstreams: "{{ lab.network.bootstrap_dns_servers }}"
+lap_dns_records:
+  - name: "{{ lab.hostnames.platform_api }}"
+    address: "{{ lab.network.envoy_gateway_ip }}"
+  - name: "{{ lab.hostnames.registry }}"
+    address: >-
+      {{ lab.virtual_machines
+         | selectattr('role', 'equalto', 'build')
+         | map(attribute='address')
+         | first }}
+  - name: "{{ lab.hostnames.build_agent }}"
+    address: >-
+      {{ lab.virtual_machines
+         | selectattr('role', 'equalto', 'build')
+         | map(attribute='address')
+         | first }}
+  - name: "{{ lab.hostnames.grafana }}"
+    address: "{{ lab.network.envoy_gateway_ip }}"
+

@@ -1,0 +1,3 @@
+# Managed by Ansible. Minor channel is selected from the pinned Kubernetes version.
+deb [signed-by=/etc/apt/keyrings/kubernetes-release.asc] https://pkgs.k8s.io/core:/stable:/v{{ versions.kubernetes.split('.')[0:2] | join('.') }}/deb/ /
+

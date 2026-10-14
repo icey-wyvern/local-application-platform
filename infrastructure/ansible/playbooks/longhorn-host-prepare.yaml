@@ -1,0 +1,7 @@
+---
+- name: Prepare worker hosts for Longhorn V1 without installing Longhorn
+  hosts: workers
+  become: true
+  gather_facts: false
+  roles:
+    - longhorn_host

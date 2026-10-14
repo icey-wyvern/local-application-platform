@@ -1,0 +1,25 @@
+#!/usr/sbin/nft -f
+# Managed by Ansible. This is the project-owned firewall for build-1.
+flush ruleset
+
+table inet lap {
+    chain input {
+        type filter hook input priority filter; policy drop;
+        ct state invalid drop
+        ct state established,related accept
+        iifname "lo" accept
+
+        ip saddr { {{ lab.network.vm_cidr }}, {{ lap_build_admin_address }}/32 } ip protocol icmp accept
+        ip saddr {{ lap_build_admin_address }}/32 tcp dport 22 accept
+        ip saddr { {{ lab.network.vm_cidr }}, {{ lap_build_admin_address }}/32 } tcp dport {{ lab.registry.port }} accept
+        ip saddr { {% for host in groups['control_planes'] + groups['workers'] %}{{ hostvars[host].ansible_host }}, {% endfor %}{{ lap_build_admin_address }} } tcp dport {{ lab.build_agent.port }} accept
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}

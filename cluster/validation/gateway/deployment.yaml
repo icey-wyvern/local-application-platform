@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-smoke
+  namespace: gateway-validation
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway-smoke
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gateway-smoke
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: gateway-smoke
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - args:
+            - -c
+            - mkdir -p /www && echo "$HOSTNAME" > /www/index.html && httpd -f -p 8080 -h /www
+          command:
+            - /bin/sh
+          image: docker.io/library/busybox:1.37.0
+          name: http
+          ports:
+            - containerPort: 8080
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          resources:
+            requests:
+              cpu: 10m
+              memory: 8Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - mountPath: /www
+              name: content
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - emptyDir: {}
+          name: content

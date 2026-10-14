@@ -1,0 +1,69 @@
+[Unit]
+Description=Local Application Platform build agent
+After=network-online.target nftables.service lap-buildkit.service lap-registry.service
+Wants=network-online.target lap-registry.service
+Requires=nftables.service lap-buildkit.service
+
+[Service]
+Type=simple
+User={{ lab.build_agent.service_user }}
+Group={{ lab.build_agent.service_user }}
+SupplementaryGroups={{ lap_buildkit_shared_group }}
+EnvironmentFile=/etc/lap-build-agent/agent.env
+ExecStart=/opt/lap/build-agent/venv/bin/lap-build-agent
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=20s
+CPUQuota=100%
+MemoryMax=1G
+TasksMax=512
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths={{ lab.build_agent.state_path }} {{ lab.build_host.trivy_cache_path }}
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+UMask=0077
+IPAddressDeny=0.0.0.0/8
+IPAddressDeny=10.0.0.0/8
+IPAddressDeny=100.64.0.0/10
+IPAddressDeny=127.0.0.0/8
+IPAddressDeny=169.254.0.0/16
+IPAddressDeny=172.16.0.0/12
+IPAddressDeny=192.0.0.0/24
+IPAddressDeny=192.0.2.0/24
+IPAddressDeny=192.168.0.0/16
+IPAddressDeny=198.18.0.0/15
+IPAddressDeny=198.51.100.0/24
+IPAddressDeny=203.0.113.0/24
+IPAddressDeny=224.0.0.0/4
+IPAddressDeny=240.0.0.0/4
+IPAddressDeny=::/128
+IPAddressDeny=::1/128
+IPAddressDeny=fc00::/7
+IPAddressDeny=fe80::/10
+IPAddressDeny=ff00::/8
+IPAddressAllow={{ ansible_host }}/32
+IPAddressAllow={{ lap_build_admin_address }}/32
+IPAddressAllow=127.0.0.53/32
+{% for host in groups['control_planes'] %}
+IPAddressAllow={{ hostvars[host].ansible_host }}/32
+{% endfor %}
+{% for host in groups['workers'] %}
+IPAddressAllow={{ hostvars[host].ansible_host }}/32
+{% endfor %}
+
+[Install]
+WantedBy=multi-user.target

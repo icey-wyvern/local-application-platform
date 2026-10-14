@@ -1,0 +1,21 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: grafana-ingress
+  namespace: monitoring
+spec:
+  description: Permit Grafana only from the shared Envoy Gateway and monitoring peers.
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: envoy-gateway-system
+            k8s:gateway.envoyproxy.io/owning-gateway-name: platform
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - port: "3000"
+              protocol: TCP

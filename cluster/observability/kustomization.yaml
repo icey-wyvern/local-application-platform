@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - grafana-certificate.yaml
+  - grafana-routes.yaml
+  - grafana-network-policy.yaml
+  - longhorn-metrics-network-policy.yaml
+  - service-monitors.yaml
+  - prometheus-rules.yaml
+  - opentelemetry-collector.yaml
+  - telemetry-network-policies.yaml
+  - telemetry-service-monitor.yaml
+configMapGenerator:
+  - name: lap-grafana-dashboards
+    namespace: monitoring
+    files:
+      - dashboards/cluster-health.json
+      - dashboards/platform-health.json
+      - dashboards/telemetry-pipelines.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+generatorOptions:
+  disableNameSuffixHash: true

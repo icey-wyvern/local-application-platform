@@ -1,0 +1,59 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: telemetry-smoke
+  namespace: observability-smoke
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 1800
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: telemetry-smoke
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      nodeSelector:
+        node.longhorn.io/create-default-disk: "true"
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: telemetry-smoke
+          image: docker.io/library/busybox:1.37.0
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsUser: 65534
+          env:
+            - name: TRACE_ID
+              valueFrom:
+                configMapKeyRef:
+                  name: telemetry-smoke-identifiers
+                  key: trace-id
+            - name: LOG_MARKER
+              valueFrom:
+                configMapKeyRef:
+                  name: telemetry-smoke-identifiers
+                  key: log-marker
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              start="$(date +%s)000000000"
+              end="$(( $(date +%s) + 1 ))000000000"
+              payload="{\"resourceSpans\":[{\"resource\":{\"attributes\":[{\"key\":\"service.name\",\"value\":{\"stringValue\":\"lap-observability-smoke\"}},{\"key\":\"service.namespace\",\"value\":{\"stringValue\":\"validation\"}},{\"key\":\"deployment.environment.name\",\"value\":{\"stringValue\":\"lab\"}}]},\"scopeSpans\":[{\"scope\":{\"name\":\"lap-observability-smoke\"},\"spans\":[{\"traceId\":\"${TRACE_ID}\",\"spanId\":\"0123456789abcdef\",\"name\":\"observability-part-two-smoke\",\"kind\":2,\"startTimeUnixNano\":\"${start}\",\"endTimeUnixNano\":\"${end}\",\"attributes\":[{\"key\":\"correlation.id\",\"value\":{\"stringValue\":\"${LOG_MARKER}\"}}]}]}]}]}"
+              wget -qO- --header='Content-Type: application/json' --post-data="$payload" \
+                http://opentelemetry-collector.monitoring.svc.cluster.local:4318/v1/traces
+              printf '{"level":"info","message":"lap-observability-part-two-smoke","correlation_id":"%s","trace_id":"%s","service.name":"lap-observability-smoke"}\n' "$LOG_MARKER" "$TRACE_ID"
+              sleep 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi

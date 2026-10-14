@@ -1,0 +1,44 @@
+#!/usr/sbin/nft -f
+# Managed by Ansible. Replace only the project table; preserve tables owned by Kubernetes/CNI.
+destroy table inet lap
+
+table inet lap {
+    chain input {
+        type filter hook input priority filter; policy drop;
+        ct state invalid drop
+        ct state established,related accept
+        iifname "lo" accept
+
+        ip saddr { {{ lab.network.vm_cidr }}, {{ lap_node_admin_address }}/32 } ip protocol icmp accept
+        ip saddr {{ lap_node_admin_address }}/32 tcp dport 22 accept
+        ip saddr { {% for host in groups['control_planes'] %}{{ hostvars[host].ansible_host }}{% if not loop.last %}, {% endif %}{% endfor %} } tcp dport 10250 accept
+        ip saddr { {% for host in (groups['control_planes'] + groups['workers']) %}{{ hostvars[host].ansible_host }}{% if not loop.last %}, {% endif %}{% endfor %} } udp dport 8472 accept
+        ip saddr { {% for host in (groups['control_planes'] + groups['workers']) %}{{ hostvars[host].ansible_host }}{% if not loop.last %}, {% endif %}{% endfor %} } tcp dport 4240 accept
+        ip saddr { {% for host in (groups['control_planes'] + groups['workers']) %}{{ hostvars[host].ansible_host }}{% if not loop.last %}, {% endif %}{% endfor %} } meta l4proto { tcp, udp } th dport 7946 accept
+        # Cilium masquerades pod-to-host traffic to the source node address.
+        # Expose only kubelet and node-exporter metrics to Kubernetes nodes and pods.
+        ip saddr { {{ lab.network.pod_cidr }}, {% for host in (groups['control_planes'] + groups['workers']) %}{{ hostvars[host].ansible_host }}{% if not loop.last %}, {% endif %}{% endfor %} } tcp dport { 9100, 10250 } accept
+{% if inventory_hostname in groups['workers'] %}
+{% if inventory_hostname == groups['workers'][0] %}
+        # Build-agent OTLP/HTTP ingress is exposed on one worker only.
+        ip saddr {{ hostvars[groups['build_machines'][0]].ansible_host }} tcp dport 30418 accept
+{% endif %}
+        # Longhorn V1 host-network/iSCSI traffic, limited to Kubernetes nodes and pods.
+        ip saddr { {{ lab.network.pod_cidr }}, {% for host in (groups['control_planes'] + groups['workers']) %}{{ hostvars[host].ansible_host }}{% if not loop.last %}, {% endif %}{% endfor %} } tcp dport { 2049, 3260, 8000, 8002, 8500-8504, 10000-30000, 30001-31000 } accept
+{% endif %}
+{% if lap_role == 'control_plane' %}
+        ip saddr { {% for host in (groups['load_balancers'] + groups['control_planes'] + groups['workers']) %}{{ hostvars[host].ansible_host }}{% if not loop.last %}, {% endif %}{% endfor %}, {{ lap_node_admin_address }} } tcp dport 6443 accept
+        ip saddr { {% for host in groups['control_planes'] %}{{ hostvars[host].ansible_host }}{% if not loop.last %}, {% endif %}{% endfor %} } tcp dport { 2379, 2380 } accept
+{% endif %}
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+        ip saddr {{ lab.network.pod_cidr }} accept
+        ip daddr {{ lab.network.pod_cidr }} accept
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}

@@ -1,0 +1,143 @@
+---
+- name: Prove API-server failure and recovery through the VIP
+  hosts: cp-2
+  become: true
+  gather_facts: false
+  vars:
+    lap_primary_load_balancer: "{{ groups['load_balancers'] | sort | first }}"
+    lap_wsl_home: "{{ lookup('env', 'HOME') }}"
+    lap_wsl_kubectl_path: "{{ lap_wsl_home }}/.local/bin/kubectl"
+    lap_wsl_kubeconfig_path: "{{ lap_wsl_home }}/.kube/lap-admin.conf"
+    lap_apiserver_manifest: /etc/kubernetes/manifests/kube-apiserver.yaml
+    lap_parked_apiserver_manifest: /var/lib/lap-ha-test/kube-apiserver.yaml
+  tasks:
+    - name: Confirm API readiness before failure injection
+      ansible.builtin.command:
+        argv:
+          - "{{ lap_wsl_kubectl_path }}"
+          - --kubeconfig
+          - "{{ lap_wsl_kubeconfig_path }}"
+          - get
+          - --raw=/readyz
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
+    - name: Create protected manifest parking directory
+      ansible.builtin.file:
+        path: "{{ lap_parked_apiserver_manifest | dirname }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Check API-server manifest before failure injection
+      ansible.builtin.stat:
+        path: "{{ lap_apiserver_manifest }}"
+      register: lap_live_apiserver_manifest
+
+    - name: Require a live API-server manifest
+      ansible.builtin.assert:
+        that:
+          - lap_live_apiserver_manifest.stat.exists
+
+    - name: Exercise one API-server failure with guaranteed restoration
+      block:
+        - name: Park the cp-2 API-server static-pod manifest
+          ansible.builtin.command:
+            argv:
+              - mv
+              - "{{ lap_apiserver_manifest }}"
+              - "{{ lap_parked_apiserver_manifest }}"
+
+        - name: Wait for cp-2 API server to stop
+          ansible.builtin.wait_for:
+            host: 127.0.0.1
+            port: 6443
+            state: stopped
+            timeout: 120
+
+        - name: Wait for HAProxy to mark cp-2 down
+          ansible.builtin.shell:
+            cmd: >-
+              set -o pipefail && printf 'show stat\n' |
+              nc -U /run/haproxy/admin.sock |
+              awk -F, '$1 == "kubernetes_control_planes" && $2 == "cp-2" { print $18 }'
+            executable: /bin/bash
+          register: lap_failed_backend_state
+          delegate_to: "{{ lap_primary_load_balancer }}"
+          changed_when: false
+          until: lap_failed_backend_state.stdout == 'DOWN'
+          retries: 30
+          delay: 2
+
+        - name: Verify VIP API access survives one failed API server
+          ansible.builtin.command:
+            argv:
+              - "{{ lap_wsl_kubectl_path }}"
+              - --kubeconfig
+              - "{{ lap_wsl_kubeconfig_path }}"
+              - get
+              - --raw=/readyz
+          delegate_to: localhost
+          become: false
+          register: lap_degraded_api_ready
+          changed_when: false
+
+        - name: Assert degraded API remains ready
+          ansible.builtin.assert:
+            that:
+              - lap_degraded_api_ready.stdout == 'ok'
+      always:
+        - name: Check parked API-server manifest
+          ansible.builtin.stat:
+            path: "{{ lap_parked_apiserver_manifest }}"
+          register: lap_parked_manifest
+
+        - name: Restore cp-2 API-server static-pod manifest
+          ansible.builtin.command:
+            argv:
+              - mv
+              - "{{ lap_parked_apiserver_manifest }}"
+              - "{{ lap_apiserver_manifest }}"
+          when: lap_parked_manifest.stat.exists
+
+        - name: Wait for cp-2 API server to return
+          ansible.builtin.wait_for:
+            host: 127.0.0.1
+            port: 6443
+            state: started
+            timeout: 180
+
+        - name: Wait for HAProxy to mark cp-2 healthy again
+          ansible.builtin.shell:
+            cmd: >-
+              set -o pipefail && printf 'show stat\n' |
+              nc -U /run/haproxy/admin.sock |
+              awk -F, '$1 == "kubernetes_control_planes" && $2 == "cp-2" { print $18 }'
+            executable: /bin/bash
+          register: lap_restored_backend_state
+          delegate_to: "{{ lap_primary_load_balancer }}"
+          changed_when: false
+          until: lap_restored_backend_state.stdout == 'UP'
+          retries: 45
+          delay: 2
+
+        - name: Verify VIP API readiness after recovery
+          ansible.builtin.command:
+            argv:
+              - "{{ lap_wsl_kubectl_path }}"
+              - --kubeconfig
+              - "{{ lap_wsl_kubeconfig_path }}"
+              - get
+              - --raw=/readyz
+          delegate_to: localhost
+          become: false
+          register: lap_restored_api_ready
+          changed_when: false
+
+        - name: Assert API server and VIP recovered
+          ansible.builtin.assert:
+            that:
+              - lap_restored_backend_state.stdout == 'UP'
+              - lap_restored_api_ready.stdout == 'ok'

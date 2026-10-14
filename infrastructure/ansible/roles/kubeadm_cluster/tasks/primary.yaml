@@ -1,0 +1,91 @@
+---
+- name: Validate primary bootstrap inputs
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname == lap_kubeadm_primary
+      - groups['control_planes'] | length == 3
+      - groups['workers'] | length == 3
+      - versions.kubernetes == '1.36.2'
+      - lab.network.pod_cidr == '10.244.0.0/16'
+      - lab.network.service_cidr == '10.96.0.0/16'
+      - lap_kubeadm_control_plane_endpoint == '10.20.0.12:6443'
+    fail_msg: Generated configuration does not match the accepted bootstrap contract.
+
+- name: Check primary encryption configuration
+  ansible.builtin.stat:
+    path: "{{ lap_kubeadm_encryption_config_path }}"
+  register: lap_primary_encryption_config
+
+- name: Refuse to retrofit missing encryption configuration
+  ansible.builtin.assert:
+    that:
+      - not lap_kubeadm_joined
+    fail_msg: >-
+      The initialized primary has no encryption configuration; refusing an unsafe
+      in-place control-plane mutation.
+  when: not lap_primary_encryption_config.stat.exists
+
+- name: Generate encryption-at-rest key on the primary
+  ansible.builtin.command:
+    argv: [openssl, rand, -base64, '32']
+  register: lap_encryption_key
+  no_log: true
+  when: not lap_primary_encryption_config.stat.exists
+
+- name: Install encryption-at-rest configuration on the primary
+  ansible.builtin.template:
+    src: encryption-config.yaml.j2
+    dest: "{{ lap_kubeadm_encryption_config_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  when: not lap_primary_encryption_config.stat.exists
+
+- name: Read primary encryption configuration for control-plane distribution
+  ansible.builtin.slurp:
+    src: "{{ lap_kubeadm_encryption_config_path }}"
+  register: lap_encryption_config
+  no_log: true
+
+- name: Install deterministic kubeadm init configuration
+  ansible.builtin.template:
+    src: init-config.yaml.j2
+    dest: "{{ lap_kubeadm_init_config_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Validate kubeadm init configuration
+  ansible.builtin.command:
+    argv:
+      - kubeadm
+      - config
+      - validate
+      - --config
+      - "{{ lap_kubeadm_init_config_path }}"
+  changed_when: false
+
+- name: Initialize the first stacked-etcd control plane
+  ansible.builtin.command:
+    argv:
+      - kubeadm
+      - init
+      - --config
+      - "{{ lap_kubeadm_init_config_path }}"
+  register: lap_kubeadm_init_result
+  no_log: true
+  when: not lap_kubeadm_joined
+
+- name: Wait for the primary API server through the HA endpoint
+  ansible.builtin.wait_for:
+    host: "{{ lab.network.api_virtual_ip }}"
+    port: "{{ lap_kubeadm_api_port }}"
+    connect_timeout: 3
+    timeout: 180
+
+- name: Read primary administrator kubeconfig
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/admin.conf
+  register: lap_admin_kubeconfig
+  no_log: true

@@ -1,0 +1,27 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: postgresql-server
+  namespace: platform-database
+spec:
+  secretName: postgresql-tls
+  duration: 2160h
+  renewBefore: 360h
+  dnsNames:
+    - postgresql
+    - postgresql.platform-database
+    - postgresql.platform-database.svc
+    - postgresql.platform-database.svc.cluster.local
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: lap-cluster-intermediate
+  privateKey:
+    algorithm: RSA
+    encoding: PKCS8
+    rotationPolicy: Always
+    size: 2048
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth

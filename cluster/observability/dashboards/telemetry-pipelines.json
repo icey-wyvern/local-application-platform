@@ -1,0 +1,92 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []},
+      "gridPos": {"h": 5, "w": 8, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "sum(up{job=\"opentelemetry-collector\"})", "refId": "A"}],
+      "title": "Collector agents Up",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []},
+      "gridPos": {"h": 5, "w": 8, "x": 8, "y": 0},
+      "id": 2,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "max(up{job=~\".*/loki\"})", "refId": "A"}],
+      "title": "Loki Up",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []},
+      "gridPos": {"h": 5, "w": 8, "x": 16, "y": 0},
+      "id": 3,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "max(up{job=\"tempo\"})", "refId": "A"}],
+      "title": "Tempo Up",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
+      "id": 4,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
+      "targets": [
+        {"expr": "sum(rate(otelcol_receiver_accepted_log_records_total[5m]))", "legendFormat": "accepted", "refId": "A"},
+        {"expr": "sum(rate(otelcol_exporter_send_failed_log_records_total[5m]))", "legendFormat": "failed", "refId": "B"}
+      ],
+      "title": "Log throughput",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
+      "id": 5,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
+      "targets": [
+        {"expr": "sum(rate(otelcol_receiver_accepted_spans_total[5m]))", "legendFormat": "accepted", "refId": "A"},
+        {"expr": "sum(rate(otelcol_exporter_send_failed_spans_total[5m]))", "legendFormat": "failed", "refId": "B"}
+      ],
+      "title": "Trace throughput",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 13},
+      "id": 6,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
+      "targets": [{"expr": "sum(rate(loki_distributor_lines_received_total[5m]))", "legendFormat": "lines", "refId": "A"}],
+      "title": "Loki ingestion",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 13},
+      "id": 7,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "single", "sort": "none"}},
+      "targets": [{"expr": "sum(rate(tempo_distributor_spans_received_total[5m]))", "legendFormat": "spans", "refId": "A"}],
+      "title": "Tempo ingestion",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 41,
+  "tags": ["lap", "observability"],
+  "templating": {"list": []},
+  "time": {"from": "now-1h", "to": "now"},
+  "timezone": "browser",
+  "title": "Telemetry Pipelines",
+  "uid": "lap-telemetry-pipelines",
+  "version": 1
+}

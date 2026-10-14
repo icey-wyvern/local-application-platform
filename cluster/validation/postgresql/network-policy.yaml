@@ -1,0 +1,20 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: postgresql-validation-ingress
+  namespace: platform-database
+spec:
+  description: Temporary authorization for the exact PostgreSQL validation identity.
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: postgresql-validation
+            io.cilium.k8s.policy.serviceaccount: postgresql-validator
+            k8s:app.kubernetes.io/name: postgresql-validator
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP

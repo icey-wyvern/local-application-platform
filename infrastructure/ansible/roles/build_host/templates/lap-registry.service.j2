@@ -1,0 +1,38 @@
+[Unit]
+Description=Local Application Platform OCI Registry
+After=network-online.target nftables.service
+Wants=network-online.target
+Requires=nftables.service
+
+[Service]
+Type=simple
+User={{ lab.registry.service_user }}
+Group={{ lab.registry.service_user }}
+# Distribution enables an OTLP localhost exporter by default; telemetry for the
+# future build agent is a later slice and no Collector runs on this host.
+Environment=OTEL_TRACES_EXPORTER=none
+ExecStart=/opt/lap/registry/{{ versions.registry }}/registry serve {{ lap_registry_config_path }}
+Restart=on-failure
+RestartSec=3s
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths={{ lab.registry.data_path }}
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

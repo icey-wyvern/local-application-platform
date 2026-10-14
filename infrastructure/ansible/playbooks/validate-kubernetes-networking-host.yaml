@@ -1,0 +1,28 @@
+---
+- name: Validate Cilium and project host firewall coexistence
+  hosts: control_planes:workers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read project firewall table
+      ansible.builtin.command:
+        argv: [nft, list, table, inet, lap]
+      register: lap_networking_firewall
+      changed_when: false
+
+    - name: Read complete nftables ruleset
+      ansible.builtin.command:
+        argv: [nft, list, ruleset]
+      register: lap_complete_ruleset
+      changed_when: false
+
+    - name: Assert minimal Cilium firewall allowances
+      ansible.builtin.assert:
+        that:
+          - lap_networking_firewall.stdout.count('policy drop') == 2
+          - "'udp dport 8472 accept' in lap_networking_firewall.stdout"
+          - "'tcp dport 4240 accept' in lap_networking_firewall.stdout"
+          - "('ip saddr ' + lab.network.pod_cidr + ' accept') in lap_networking_firewall.stdout"
+          - "('ip daddr ' + lab.network.pod_cidr + ' accept') in lap_networking_firewall.stdout"
+          - "'cilium' in lap_complete_ruleset.stdout"
+        fail_msg: Cilium and the project-owned default-deny firewall do not coexist correctly.

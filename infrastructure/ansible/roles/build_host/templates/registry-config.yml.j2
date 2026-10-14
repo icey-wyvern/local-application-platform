@@ -1,0 +1,30 @@
+version: 0.1
+log:
+  level: info
+  formatter: text
+  fields:
+    service: lap-registry
+storage:
+  filesystem:
+    rootdirectory: {{ lab.registry.data_path }}
+  delete:
+    enabled: true
+http:
+  addr: {{ ansible_host }}:{{ lab.registry.port }}
+  net: tcp
+  secret: {{ lap_registry_http_secret }}
+  headers:
+    X-Content-Type-Options: [nosniff]
+  tls:
+    certificate: {{ lap_registry_tls_path }}/registry.crt
+    key: {{ lap_registry_tls_path }}/registry.key
+auth:
+  htpasswd:
+    realm: Local Application Platform Registry
+    path: {{ lap_registry_auth_path }}
+health:
+  storagedriver:
+    enabled: true
+    interval: 10s
+    threshold: 3
+

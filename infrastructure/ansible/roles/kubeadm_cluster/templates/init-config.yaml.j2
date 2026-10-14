@@ -1,0 +1,56 @@
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: "{{ ansible_host }}"
+  bindPort: {{ lap_kubeadm_api_port }}
+nodeRegistration:
+  criSocket: unix:///run/containerd/containerd.sock
+  imagePullPolicy: IfNotPresent
+  imagePullSerial: true
+  name: "{{ inventory_hostname }}"
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+clusterName: local-application-platform
+kubernetesVersion: "v{{ versions.kubernetes }}"
+controlPlaneEndpoint: "{{ lap_kubeadm_control_plane_endpoint }}"
+networking:
+  dnsDomain: cluster.local
+  podSubnet: "{{ lab.network.pod_cidr }}"
+  serviceSubnet: "{{ lab.network.service_cidr }}"
+etcd:
+  local:
+    dataDir: /var/lib/etcd
+apiServer:
+  certSANs:
+    - "{{ lab.network.api_virtual_ip }}"
+{% for host in groups['control_planes'] | sort %}
+    - "{{ hostvars[host].ansible_host }}"
+{% endfor %}
+  extraArgs:
+    - name: encryption-provider-config
+      value: "{{ lap_kubeadm_encryption_config_path }}"
+    - name: encryption-provider-config-automatic-reload
+      value: "true"
+  extraVolumes:
+    - name: encryption-config
+      hostPath: "{{ lap_kubeadm_encryption_config_path }}"
+      mountPath: "{{ lap_kubeadm_encryption_config_path }}"
+      readOnly: true
+      pathType: File
+controllerManager:
+  extraArgs:
+    - name: node-cidr-mask-size
+      value: "{{ lab.network.pod_node_cidr_mask }}"
+dns:
+  disabled: false
+proxy:
+  disabled: false
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd
+---
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+kind: KubeProxyConfiguration

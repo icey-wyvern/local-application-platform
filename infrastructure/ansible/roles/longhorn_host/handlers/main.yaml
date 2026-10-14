@@ -1,0 +1,7 @@
+---
+- name: Load Longhorn kernel modules
+  ansible.builtin.command:
+    argv: [modprobe, "{{ item }}"]
+  loop: "{{ lap_longhorn_kernel_modules }}"
+  changed_when: true
+  listen: load longhorn kernel modules

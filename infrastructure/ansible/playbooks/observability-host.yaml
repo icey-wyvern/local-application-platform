@@ -1,0 +1,10 @@
+---
+- name: Configure scoped host metrics access for Prometheus
+  hosts: control_planes:workers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Reconcile Kubernetes node firewall for internal metrics scraping
+      ansible.builtin.include_role:
+        name: kubernetes_node
+        tasks_from: networking-firewall

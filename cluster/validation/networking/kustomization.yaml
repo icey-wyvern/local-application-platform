@@ -1,0 +1,8 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - server-worker-1.yaml
+  - server-worker-2.yaml
+  - client-worker-3.yaml
+  - service.yaml

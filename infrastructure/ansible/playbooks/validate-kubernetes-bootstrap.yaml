@@ -1,0 +1,372 @@
+---
+- name: Validate node services and kubeadm artifacts
+  hosts: control_planes:workers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Check node services
+      ansible.builtin.command:
+        argv: [systemctl, is-active, "{{ item }}"]
+      loop:
+        - containerd
+        - kubelet
+      changed_when: false
+
+    - name: Check node service enablement
+      ansible.builtin.command:
+        argv: [systemctl, is-enabled, "{{ item }}"]
+      loop:
+        - containerd
+        - kubelet
+      changed_when: false
+
+    - name: Read kubelet kubeconfig endpoint
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig=/etc/kubernetes/kubelet.conf
+          - config
+          - view
+          - --minify
+          - -o
+          - jsonpath={.clusters[0].cluster.server}
+      register: lap_kubelet_server
+      changed_when: false
+
+    - name: Read node listeners
+      ansible.builtin.command:
+        argv: [ss, -H, -lntup]
+      register: lap_node_listeners
+      changed_when: false
+
+    - name: Read project firewall table
+      ansible.builtin.command:
+        argv: [nft, list, table, inet, lap]
+      register: lap_node_firewall
+      changed_when: false
+
+    - name: Check control-plane manifests
+      ansible.builtin.stat:
+        path: "/etc/kubernetes/manifests/{{ item }}.yaml"
+      loop:
+        - etcd
+        - kube-apiserver
+        - kube-controller-manager
+        - kube-scheduler
+      register: lap_control_plane_manifests
+      when: inventory_hostname in groups['control_planes']
+
+    - name: Assert node bootstrap service and exposure state
+      ansible.builtin.assert:
+        that:
+          - >-
+            (inventory_hostname in groups['workers']
+             and lap_kubelet_server.stdout
+                 == 'https://' + lab.network.api_virtual_ip + ':6443')
+            or
+            (inventory_hostname in groups['control_planes']
+             and lap_kubelet_server.stdout
+                 == 'https://' + ansible_host + ':6443')
+          - "'policy drop' in lap_node_firewall.stdout"
+          - "':10250' in lap_node_listeners.stdout"
+          - >-
+            inventory_hostname in groups['control_planes']
+            or ':6443' not in lap_node_listeners.stdout
+          - >-
+            inventory_hostname in groups['control_planes']
+            or ':2379' not in lap_node_listeners.stdout
+          - >-
+            inventory_hostname in groups['control_planes']
+            or ':2380' not in lap_node_listeners.stdout
+          - >-
+            inventory_hostname in groups['workers']
+            or lap_control_plane_manifests.results
+               | selectattr('stat.exists') | list | length == 4
+        fail_msg: Node service, endpoint, firewall, listener or manifest validation failed.
+
+- name: Validate control-plane certificates and stacked-etcd configuration
+  hosts: control_planes
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read API server certificate subject alternative names
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - x509
+          - -in
+          - /etc/kubernetes/pki/apiserver.crt
+          - -noout
+          - -ext
+          - subjectAltName
+      register: lap_apiserver_sans
+      changed_when: false
+
+    - name: Read API server static-pod manifest
+      ansible.builtin.slurp:
+        src: /etc/kubernetes/manifests/kube-apiserver.yaml
+      register: lap_apiserver_manifest
+
+    - name: Inspect encryption configuration permissions
+      ansible.builtin.stat:
+        path: /etc/kubernetes/encryption-config.yaml
+      register: lap_encryption_config
+
+    - name: List reusable bootstrap tokens on the primary
+      ansible.builtin.command:
+        argv: [kubeadm, token, list]
+      register: lap_bootstrap_tokens
+      changed_when: false
+      no_log: true
+      when: inventory_hostname == 'cp-1'
+
+    - name: Assert certificate, stacked-etcd and encryption configuration
+      ansible.builtin.assert:
+        that:
+          - "('IP Address:' + lab.network.api_virtual_ip) in lap_apiserver_sans.stdout"
+          - >-
+            '--etcd-servers=https://127.0.0.1:2379'
+            in (lap_apiserver_manifest.content | b64decode)
+          - >-
+            '--encryption-provider-config=/etc/kubernetes/encryption-config.yaml'
+            in (lap_apiserver_manifest.content | b64decode)
+          - lap_encryption_config.stat.exists
+          - lap_encryption_config.stat.mode == '0600'
+          - >-
+            inventory_hostname != 'cp-1'
+            or lap_bootstrap_tokens.stdout | trim | length == 0
+        fail_msg: Control-plane TLS, stacked-etcd or encryption settings are incorrect.
+
+- name: Validate WSL kubectl and registered node state
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+  vars:
+    lap_wsl_home: "{{ lookup('env', 'HOME') }}"
+    lap_wsl_kubectl_path: "{{ lap_wsl_home }}/.local/bin/kubectl"
+    lap_wsl_kubeconfig_path: "{{ lap_wsl_home }}/.kube/lap-admin.conf"
+  tasks:
+    - name: Inspect WSL administration files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ lap_wsl_kubectl_path }}"
+        - "{{ lap_wsl_kubeconfig_path }}"
+      register: lap_wsl_admin_files
+
+    - name: Query API readiness through the VIP
+      ansible.builtin.command:
+        argv:
+          - "{{ lap_wsl_kubectl_path }}"
+          - --kubeconfig
+          - "{{ lap_wsl_kubeconfig_path }}"
+          - get
+          - --raw=/readyz
+      register: lap_api_ready
+      changed_when: false
+
+    - name: Read client and server versions
+      ansible.builtin.command:
+        argv:
+          - "{{ lap_wsl_kubectl_path }}"
+          - --kubeconfig
+          - "{{ lap_wsl_kubeconfig_path }}"
+          - version
+          - -o
+          - json
+      register: lap_kubernetes_version
+      changed_when: false
+
+    - name: Read registered nodes
+      ansible.builtin.command:
+        argv:
+          - "{{ lap_wsl_kubectl_path }}"
+          - --kubeconfig
+          - "{{ lap_wsl_kubeconfig_path }}"
+          - get
+          - nodes
+          - -o
+          - json
+      register: lap_registered_nodes_command
+      changed_when: false
+
+    - name: Read kubeadm cluster configuration
+      ansible.builtin.command:
+        argv:
+          - "{{ lap_wsl_kubectl_path }}"
+          - --kubeconfig
+          - "{{ lap_wsl_kubeconfig_path }}"
+          - -n
+          - kube-system
+          - get
+          - configmap
+          - kubeadm-config
+          - -o
+          - jsonpath={.data.ClusterConfiguration}
+      register: lap_kubeadm_cluster_config
+      changed_when: false
+
+    - name: Record parsed cluster state
+      ansible.builtin.set_fact:
+        lap_kubernetes_version_json: "{{ lap_kubernetes_version.stdout | from_json }}"
+        lap_registered_nodes: "{{ (lap_registered_nodes_command.stdout | from_json)['items'] }}"
+
+    - name: Assert WSL access, versions and exact node membership
+      ansible.builtin.assert:
+        that:
+          - lap_wsl_admin_files.results[0].stat.exists
+          - lap_wsl_admin_files.results[1].stat.exists
+          - lap_wsl_admin_files.results[1].stat.mode == '0600'
+          - lap_api_ready.stdout == 'ok'
+          - lap_kubernetes_version_json.clientVersion.gitVersion == 'v' + versions.kubernetes
+          - lap_kubernetes_version_json.serverVersion.gitVersion == 'v' + versions.kubernetes
+          - >-
+            lap_registered_nodes | map(attribute='metadata.name') | sort
+            == (groups['control_planes'] + groups['workers']) | sort
+          - "('controlPlaneEndpoint: ' + lab.network.api_virtual_ip + ':6443') in lap_kubeadm_cluster_config.stdout"
+          - "('podSubnet: ' + lab.network.pod_cidr) in lap_kubeadm_cluster_config.stdout"
+          - "('serviceSubnet: ' + lab.network.service_cidr) in lap_kubeadm_cluster_config.stdout"
+        fail_msg: WSL API access, version, endpoint, CIDRs or membership is incorrect.
+
+    - name: Read Cilium daemonset state when networking has been installed
+      ansible.builtin.command:
+        argv:
+          - "{{ lap_wsl_kubectl_path }}"
+          - --kubeconfig
+          - "{{ lap_wsl_kubeconfig_path }}"
+          - -n
+          - kube-system
+          - get
+          - daemonset
+          - cilium
+          - -o
+          - json
+      register: lap_cilium_daemonset_command
+      changed_when: false
+      failed_when: lap_cilium_daemonset_command.rc not in [0, 1]
+
+    - name: Record whether cluster networking is installed
+      ansible.builtin.set_fact:
+        lap_cilium_daemonset: >-
+          {{ (lap_cilium_daemonset_command.stdout | from_json)
+             if lap_cilium_daemonset_command.rc == 0 else {} }}
+
+    - name: Assert roles, taints and readiness appropriate to the networking stage
+      ansible.builtin.assert:
+        that:
+          - >-
+            (item.metadata.name in groups['control_planes'])
+            == ('node-role.kubernetes.io/control-plane' in item.metadata.labels)
+          - >-
+            (item.metadata.name in groups['control_planes'])
+            == ((item.spec.taints | default([])
+                 | selectattr('key', 'equalto', 'node-role.kubernetes.io/control-plane')
+                 | selectattr('effect', 'equalto', 'NoSchedule')
+                 | list | length) == 1)
+          - >-
+            ((lap_cilium_daemonset_command.rc == 0) and
+             ((item.status.conditions
+               | selectattr('type', 'equalto', 'Ready')
+               | map(attribute='status') | first) == 'True'))
+            or
+            ((lap_cilium_daemonset_command.rc != 0) and
+             ((item.status.conditions
+               | selectattr('type', 'equalto', 'Ready')
+               | map(attribute='status') | first) == 'False') and
+             ('NetworkPluginNotReady' in
+              (item.status.conditions
+               | selectattr('type', 'equalto', 'Ready')
+               | map(attribute='message') | first)) and
+             ('cni plugin not initialized' in
+              (item.status.conditions
+               | selectattr('type', 'equalto', 'Ready')
+               | map(attribute='message') | first)))
+        fail_msg: >-
+          A node role/taint is wrong, a post-CNI node is not Ready, or a pre-CNI
+          node is NotReady for a reason other than the missing network plugin.
+      loop: "{{ lap_registered_nodes }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
+
+    - name: Assert installed Cilium covers every registered node
+      ansible.builtin.assert:
+        that:
+          - lap_cilium_daemonset.status.desiredNumberScheduled == lap_registered_nodes | length
+          - lap_cilium_daemonset.status.numberReady == lap_registered_nodes | length
+        fail_msg: Cilium is installed but its daemonset is not Ready on every node.
+      when: lap_cilium_daemonset_command.rc == 0
+
+    - name: Check all stacked-etcd endpoints
+      ansible.builtin.command:
+        argv:
+          - "{{ lap_wsl_kubectl_path }}"
+          - --kubeconfig
+          - "{{ lap_wsl_kubeconfig_path }}"
+          - -n
+          - kube-system
+          - exec
+          - etcd-cp-1
+          - --
+          - etcdctl
+          - --endpoints=https://10.20.0.31:2379,https://10.20.0.32:2379,https://10.20.0.33:2379
+          - --cacert=/etc/kubernetes/pki/etcd/ca.crt
+          - --cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt
+          - --key=/etc/kubernetes/pki/etcd/healthcheck-client.key
+          - endpoint
+          - health
+      register: lap_etcd_health
+      changed_when: false
+
+    - name: Read stacked-etcd membership
+      ansible.builtin.command:
+        argv:
+          - "{{ lap_wsl_kubectl_path }}"
+          - --kubeconfig
+          - "{{ lap_wsl_kubeconfig_path }}"
+          - -n
+          - kube-system
+          - exec
+          - etcd-cp-1
+          - --
+          - etcdctl
+          - --endpoints=https://127.0.0.1:2379
+          - --cacert=/etc/kubernetes/pki/etcd/ca.crt
+          - --cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt
+          - --key=/etc/kubernetes/pki/etcd/healthcheck-client.key
+          - member
+          - list
+      register: lap_etcd_members
+      changed_when: false
+
+    - name: Assert stacked-etcd health and membership
+      ansible.builtin.assert:
+        that:
+          - lap_etcd_health.stdout_lines | select('search', 'is healthy') | list | length == 3
+          - lap_etcd_members.stdout_lines | length == 3
+          - "'cp-1' in lap_etcd_members.stdout"
+          - "'cp-2' in lap_etcd_members.stdout"
+          - "'cp-3' in lap_etcd_members.stdout"
+        fail_msg: The three-member stacked-etcd cluster is not healthy.
+
+- name: Validate HAProxy Kubernetes API backends
+  hosts: load_balancers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Read HAProxy runtime statistics
+      ansible.builtin.shell:
+        cmd: set -o pipefail && printf 'show stat\n' | nc -U /run/haproxy/admin.sock
+        executable: /bin/bash
+      register: lap_haproxy_stats
+      changed_when: false
+
+    - name: Assert every control-plane backend is healthy
+      ansible.builtin.assert:
+        that:
+          - >-
+            ((lap_haproxy_stats.stdout_lines
+              | select('match', '^kubernetes_control_planes,' + item + ',')
+              | first).split(','))[17] == 'UP'
+        fail_msg: "HAProxy backend {{ item }} is not UP on {{ inventory_hostname }}."
+      loop: "{{ groups['control_planes'] | sort }}"

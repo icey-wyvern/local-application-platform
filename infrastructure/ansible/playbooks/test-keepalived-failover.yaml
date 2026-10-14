@@ -1,0 +1,94 @@
+---
+- name: Exercise and restore Kubernetes API VIP failover
+  hosts: lb-1
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Exercise failover with guaranteed restoration
+      block:
+        - name: Confirm preferred node initially owns the VIP
+          ansible.builtin.command:
+            argv: [ip, -o, -4, address, show, to, "{{ lab.network.api_virtual_ip }}/32"]
+          register: lap_initial_preferred_vip
+          changed_when: false
+
+        - name: Confirm peer initially lacks the VIP
+          ansible.builtin.command:
+            argv: [ip, -o, -4, address, show, to, "{{ lab.network.api_virtual_ip }}/32"]
+          delegate_to: lb-2
+          register: lap_initial_peer_vip
+          changed_when: false
+
+        - name: Assert deterministic steady state
+          ansible.builtin.assert:
+            that:
+              - lap_initial_preferred_vip.stdout | length > 0
+              - lap_initial_peer_vip.stdout | length == 0
+
+        - name: Stop Keepalived on the preferred node
+          ansible.builtin.systemd_service:
+            name: keepalived
+            state: stopped
+
+        - name: Allow peer election to complete
+          ansible.builtin.pause:
+            seconds: 4
+
+        - name: Confirm stopped node released the VIP
+          ansible.builtin.command:
+            argv: [ip, -o, -4, address, show, to, "{{ lab.network.api_virtual_ip }}/32"]
+          register: lap_failed_preferred_vip
+          changed_when: false
+
+        - name: Confirm peer acquired the VIP
+          ansible.builtin.command:
+            argv: [ip, -o, -4, address, show, to, "{{ lab.network.api_virtual_ip }}/32"]
+          delegate_to: lb-2
+          register: lap_failed_peer_vip
+          changed_when: false
+
+        - name: Assert single peer ownership after failure
+          ansible.builtin.assert:
+            that:
+              - lap_failed_preferred_vip.stdout | length == 0
+              - lap_failed_peer_vip.stdout | length > 0
+
+        - name: Confirm VIP services remain reachable through the peer
+          ansible.builtin.wait_for:
+            host: "{{ lab.network.api_virtual_ip }}"
+            port: "{{ item }}"
+            timeout: 5
+          loop:
+            - 53
+            - 6443
+          become: false
+          delegate_to: localhost
+      always:
+        - name: Restore Keepalived on the preferred node
+          ansible.builtin.systemd_service:
+            name: keepalived
+            state: started
+
+        - name: Allow preferred-node preemption to complete
+          ansible.builtin.pause:
+            seconds: 4
+
+        - name: Confirm preferred node regained the VIP
+          ansible.builtin.command:
+            argv: [ip, -o, -4, address, show, to, "{{ lab.network.api_virtual_ip }}/32"]
+          register: lap_restored_preferred_vip
+          changed_when: false
+
+        - name: Confirm peer released the restored VIP
+          ansible.builtin.command:
+            argv: [ip, -o, -4, address, show, to, "{{ lab.network.api_virtual_ip }}/32"]
+          delegate_to: lb-2
+          register: lap_restored_peer_vip
+          changed_when: false
+
+        - name: Assert restored deterministic steady state
+          ansible.builtin.assert:
+            that:
+              - lap_restored_preferred_vip.stdout | length > 0
+              - lap_restored_peer_vip.stdout | length == 0
+

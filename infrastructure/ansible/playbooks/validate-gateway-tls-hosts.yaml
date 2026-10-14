@@ -1,0 +1,57 @@
+---
+- name: Validate trusted Envoy Gateway HTTPS from lab hosts
+  hosts: load_balancers:control_planes:workers:build_machines
+  gather_facts: false
+  vars:
+    lap_tls_validation_hostname: "tls-smoke.{{ lab.lab.application_domain }}"
+  tasks:
+    - name: Resolve temporary TLS hostname through lab DNS
+      ansible.builtin.script:
+        cmd: >-
+          files/query_dns.py
+          {{ lab.network.api_virtual_ip }}
+          {{ lap_tls_validation_hostname }}
+          {{ lab.network.envoy_gateway_ip }}
+        executable: python3
+      changed_when: false
+
+    - name: Request temporary application with certificate verification
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --fail
+          - --silent
+          - --show-error
+          - --resolve
+          - >-
+            {{ lap_tls_validation_hostname }}:443:{{ lab.network.envoy_gateway_ip }}
+          - "https://{{ lap_tls_validation_hostname }}/"
+      register: lap_tls_response
+      changed_when: false
+
+    - name: Assert HTTPS response came from a validation backend
+      ansible.builtin.assert:
+        that:
+          - lap_tls_response.stdout is match('^tls-smoke-[a-z0-9-]+\\n?$')
+
+    - name: Verify HTTP redirects to HTTPS
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --silent
+          - --show-error
+          - --head
+          - --resolve
+          - >-
+            {{ lap_tls_validation_hostname }}:80:{{ lab.network.envoy_gateway_ip }}
+          - "http://{{ lap_tls_validation_hostname }}/"
+      register: lap_http_redirect
+      changed_when: false
+
+    - name: Assert redirect location retains the application hostname
+      ansible.builtin.assert:
+        that:
+          - lap_http_redirect.stdout is search('HTTP/[0-9.]+ 308')
+          - >-
+            (lap_http_redirect.stdout | lower) is search(
+              'location: https://' + lap_tls_validation_hostname + '/')

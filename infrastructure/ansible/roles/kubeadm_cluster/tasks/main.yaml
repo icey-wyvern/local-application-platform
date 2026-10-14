@@ -1,0 +1,4 @@
+---
+- name: Refuse direct use of the orchestration-only role
+  ansible.builtin.fail:
+    msg: Use playbooks/kubernetes-bootstrap.yaml, which selects explicit role task files.

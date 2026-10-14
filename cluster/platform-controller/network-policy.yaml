@@ -1,0 +1,46 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: platform-controller
+  namespace: platform-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: platform-controller
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: monitoring}
+      ports:
+        - {port: 8080, protocol: TCP}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {port: 53, protocol: UDP}
+        - {port: 53, protocol: TCP}
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: monitoring}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: opentelemetry-collector}
+      ports:
+        - {port: 4318, protocol: TCP}
+    - to:
+        - ipBlock: {cidr: 10.96.0.1/32}
+      ports:
+        - {port: 443, protocol: TCP}
+    - to:
+        - ipBlock: {cidr: 10.20.0.31/32}
+        - ipBlock: {cidr: 10.20.0.32/32}
+        - ipBlock: {cidr: 10.20.0.33/32}
+      ports:
+        - {port: 6443, protocol: TCP}
+    - to:
+        - ipBlock: {cidr: 10.20.0.100/32}
+      ports:
+        - {port: 443, protocol: TCP}

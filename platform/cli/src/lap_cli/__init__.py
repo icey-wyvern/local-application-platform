@@ -1,0 +1,1 @@
+"""Local Application Platform CLI."""

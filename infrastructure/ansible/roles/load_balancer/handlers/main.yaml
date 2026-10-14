@@ -1,0 +1,31 @@
+---
+- name: Apply load-balancer sysctl settings
+  ansible.builtin.command:
+    argv: [sysctl, --system]
+  changed_when: true
+  listen: apply load-balancer sysctl settings
+
+- name: Restart HAProxy
+  ansible.builtin.systemd_service:
+    name: haproxy
+    state: restarted
+  listen: restart haproxy
+
+- name: Restart Keepalived
+  ansible.builtin.systemd_service:
+    name: keepalived
+    state: restarted
+  listen: restart keepalived
+
+- name: Restart dnsmasq
+  ansible.builtin.systemd_service:
+    name: dnsmasq
+    state: restarted
+  listen: restart dnsmasq
+
+- name: Reload nftables
+  ansible.builtin.systemd_service:
+    name: nftables
+    state: reloaded
+  listen: reload nftables
+

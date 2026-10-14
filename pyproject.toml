@@ -1,0 +1,48 @@
+[project]
+name = "local-application-platform"
+version = "1.0.0"
+description = "Local reproducible application platform infrastructure lab."
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+dependencies = []
+
+[tool.uv.workspace]
+members = ["tools/config", "platform/build-agent", "platform/api", "platform/cli"]
+
+[dependency-groups]
+dev = [
+  "pytest==8.4.1",
+  "ruff==0.12.11",
+  "mypy==1.17.1",
+  "types-PyYAML==6.0.12.20250822",
+]
+
+[tool.pytest.ini_options]
+markers = [
+  "unit: fast unit tests",
+  "integration: integration tests",
+  "kind: tests requiring the Kind demo cluster",
+  "full_lab: tests requiring the full virtual-machine lab",
+  "destructive: tests that intentionally stop or destroy infrastructure",
+  "security: security-behaviour tests",
+]
+testpaths = [
+  "tools/config/tests",
+  "platform/build-agent/tests",
+  "platform/api/tests",
+  "platform/cli/tests",
+  "tests",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+preview = true
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "S"]
+ignore = ["S101"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true

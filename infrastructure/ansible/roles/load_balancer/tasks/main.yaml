@@ -1,0 +1,118 @@
+---
+- name: Validate authoritative load-balancer inputs
+  ansible.builtin.assert:
+    that:
+      - groups['load_balancers'] | length == 2
+      - groups['control_planes'] | length == 3
+      - inventory_hostname in lap_keepalived_priorities
+      - lap_keepalived_priorities['lb-1'] > lap_keepalived_priorities['lb-2']
+      - lab.network.api_virtual_ip != ansible_host
+      - >-
+        lab.network.api_virtual_ip.split('.')[0:3]
+        == lab.network.vm_cidr.split('/')[0].split('.')[0:3]
+    fail_msg: Generated inventory does not satisfy the two-LB/three-control-plane contract.
+
+- name: Discover interface carrying the inventory address
+  ansible.builtin.set_fact:
+    lap_lab_interface: "{{ item }}"
+  loop: "{{ ansible_facts.interfaces }}"
+  when:
+    - ansible_facts[item].ipv4 is defined
+    - ansible_facts[item].ipv4.address == ansible_host
+
+- name: Read current routed administrator connection
+  ansible.builtin.command:
+    argv: [printenv, SSH_CONNECTION]
+  become: false
+  register: lap_ssh_connection
+  changed_when: false
+
+- name: Derive current routed administrator address
+  ansible.builtin.set_fact:
+    lap_admin_address: "{{ lap_ssh_connection.stdout.split()[0] }}"
+
+- name: Validate discovered network inputs
+  ansible.builtin.assert:
+    that:
+      - lap_lab_interface is defined
+      - lap_lab_interface | length > 0
+      - lap_admin_address is match('^[0-9]+(\.[0-9]+){3}$')
+    fail_msg: Cannot safely identify the lab interface or current Ansible source address.
+
+- name: Install load-balancer packages without premature service starts
+  ansible.builtin.apt:
+    name:
+      - dnsmasq
+      - haproxy
+      - keepalived
+      - nftables
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    policy_rc_d: 101
+
+- name: Configure non-local VIP binding
+  ansible.builtin.template:
+    src: sysctl.conf.j2
+    dest: /etc/sysctl.d/90-lap-load-balancer.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: apply load-balancer sysctl settings
+
+- name: Apply sysctl before starting VIP-bound services
+  ansible.builtin.meta: flush_handlers
+
+- name: Configure HAProxy
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/haproxy -c -f %s
+  notify: restart haproxy
+
+- name: Configure Keepalived
+  ansible.builtin.template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/keepalived --config-test --use-file=%s
+  notify: restart keepalived
+
+- name: Configure dnsmasq
+  ansible.builtin.template:
+    src: dnsmasq.conf.j2
+    dest: /etc/dnsmasq.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/dnsmasq --test --conf-file=%s
+  notify: restart dnsmasq
+
+- name: Configure project-owned nftables rules
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/nft -c -f %s
+  notify: reload nftables
+
+- name: Enable and start load-balancer services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - nftables
+    - keepalived
+    - haproxy
+    - dnsmasq
+
+- name: Apply pending service configuration
+  ansible.builtin.meta: flush_handlers

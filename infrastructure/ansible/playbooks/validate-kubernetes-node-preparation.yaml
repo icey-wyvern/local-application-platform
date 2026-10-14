@@ -1,0 +1,151 @@
+---
+- name: Validate Kubernetes node preparation without bootstrap
+  hosts: control_planes:workers
+  become: true
+  gather_facts: false
+  vars:
+    lap_kubernetes_deb_version: "{{ versions.kubernetes }}-2.1"
+    lap_kubernetes_cni_deb_version: "{{ versions.cni_plugins }}-1.1"
+    lap_kubernetes_packages:
+      - kubeadm
+      - kubectl
+      - kubelet
+      - kubernetes-cni
+  tasks:
+    - name: Read active swap
+      ansible.builtin.command:
+        argv: [swapon, --show, --noheadings]
+      register: lap_swap
+      changed_when: false
+
+    - name: Read required sysctls
+      ansible.builtin.command:
+        argv: [sysctl, -n, "{{ item }}"]
+      loop:
+        - net.bridge.bridge-nf-call-iptables
+        - net.bridge.bridge-nf-call-ip6tables
+        - net.ipv4.ip_forward
+      register: lap_sysctls
+      changed_when: false
+
+    - name: Check required loaded modules
+      ansible.builtin.stat:
+        path: "/sys/module/{{ item }}"
+      loop:
+        - overlay
+        - br_netfilter
+      register: lap_modules
+
+    - name: Check containerd service
+      ansible.builtin.command:
+        argv: [systemctl, is-active, containerd]
+      changed_when: false
+
+    - name: Read runtime and CNI versions
+      ansible.builtin.command:
+        argv: "{{ item }}"
+      loop:
+        - [/usr/local/bin/containerd, --version]
+        - [/usr/local/sbin/runc, --version]
+        - [/opt/cni/bin/bridge, --version]
+      register: lap_runtime_versions
+      changed_when: false
+
+    - name: Read effective containerd configuration
+      ansible.builtin.command:
+        argv: [/usr/local/bin/containerd, config, dump]
+      register: lap_containerd_config
+      changed_when: false
+
+    - name: Check containerd CRI plugin
+      ansible.builtin.command:
+        argv: [/usr/local/bin/ctr, plugins, ls]
+      register: lap_containerd_plugins
+      changed_when: false
+
+    - name: Read Kubernetes component versions
+      ansible.builtin.command:
+        argv: "{{ item }}"
+      loop:
+        - [kubelet, --version]
+        - [kubeadm, version, -o, short]
+        - [kubectl, version, --client=true]
+      register: lap_kubernetes_versions
+      changed_when: false
+
+    - name: Read installed Kubernetes package versions
+      ansible.builtin.command:
+        argv: [dpkg-query, -W, "-f=${Version}", "{{ item }}"]
+      loop:
+        - kubeadm
+        - kubectl
+        - kubelet
+        - kubernetes-cni
+      register: lap_kubernetes_deb_versions
+      changed_when: false
+
+    - name: Read held packages
+      ansible.builtin.command:
+        argv: [apt-mark, showhold]
+      register: lap_held_packages
+      changed_when: false
+
+    - name: Check kubelet enablement
+      ansible.builtin.command:
+        argv: [systemctl, is-enabled, kubelet]
+      changed_when: false
+
+    - name: Read expected pre-bootstrap kubelet state
+      ansible.builtin.command:
+        argv: [systemctl, is-active, kubelet]
+      register: lap_kubelet_state
+      changed_when: false
+      failed_when: false
+
+    - name: Check for kubeadm initialization and join artifacts
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/kubernetes/admin.conf
+        - /etc/kubernetes/kubelet.conf
+        - /etc/kubernetes/manifests/kube-apiserver.yaml
+        - /var/lib/kubelet/config.yaml
+        - /var/lib/kubelet/kubeadm-flags.env
+      register: lap_kubeadm_artifacts
+
+    - name: Read project firewall table
+      ansible.builtin.command:
+        argv: [nft, list, table, inet, lap]
+      register: lap_node_firewall
+      changed_when: false
+
+    - name: Assert node preparation state
+      ansible.builtin.assert:
+        that:
+          - lap_swap.stdout | length == 0
+          - lap_sysctls.results | map(attribute='stdout') | list == ['1', '1', '1']
+          - lap_modules.results | map(attribute='stat.exists') | list == [true, true]
+          - versions.containerd in lap_runtime_versions.results[0].stdout
+          - versions.runc in lap_runtime_versions.results[1].stdout
+          - >-
+            versions.cni_plugins in
+            (lap_runtime_versions.results[2].stdout + lap_runtime_versions.results[2].stderr)
+          - "'SystemdCgroup = true' in lap_containerd_config.stdout"
+          - "'/usr/local/sbin/runc' in lap_containerd_config.stdout"
+          - "'io.containerd.cri.v1' in lap_containerd_plugins.stdout"
+          - "'ok' in lap_containerd_plugins.stdout"
+          - >-
+            lap_kubernetes_versions.results
+            | map(attribute='stdout')
+            | select('search', versions.kubernetes)
+            | list | length == 3
+          - >-
+            lap_kubernetes_deb_versions.results[0:3]
+            | map(attribute='stdout')
+            | unique | list == [lap_kubernetes_deb_version]
+          - lap_kubernetes_deb_versions.results[3].stdout == lap_kubernetes_cni_deb_version
+          - lap_kubernetes_packages | difference(lap_held_packages.stdout_lines) | length == 0
+          - lap_kubelet_state.stdout in ['inactive', 'failed']
+          - lap_kubeadm_artifacts.results | selectattr('stat.exists') | list | length == 0
+          - "'policy drop' in lap_node_firewall.stdout"
+        fail_msg: Kubernetes node preparation does not match the pinned pre-bootstrap contract.

@@ -1,0 +1,95 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: lap-initial-alerts
+  namespace: monitoring
+spec:
+  groups:
+    - name: lap.initial
+      rules:
+        - alert: KubernetesNodeNotReady
+          expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Kubernetes node {{ $labels.node }} is not Ready
+        - alert: KubernetesAPIRedundancyLost
+          expr: sum(up{job="apiserver"} == 1) < 2
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: Fewer than two Kubernetes API targets are healthy
+        - alert: ExcessivePodRestarts
+          expr: increase(kube_pod_container_status_restarts_total[15m]) > 3
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Pod {{ $labels.namespace }}/{{ $labels.pod }} is restarting excessively
+        - alert: PrometheusTargetDown
+          expr: up == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Prometheus target {{ $labels.job }}/{{ $labels.instance }} is down
+        - alert: LonghornVolumeUnhealthy
+          expr: longhorn_volume_robustness > 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Longhorn volume {{ $labels.volume }} is degraded or faulted
+        - alert: PostgreSQLUnavailable
+          expr: kube_statefulset_status_replicas_ready{namespace="platform-database",statefulset="postgresql"} < 1
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: PostgreSQL has no ready replica
+        - alert: PersistentVolumeCapacityCritical
+          expr: kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.10
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} has under 10% free
+    - name: lap.telemetry
+      rules:
+        - alert: OpenTelemetryCollectorUnavailable
+          expr: absent(up{job="opentelemetry-collector"} == 1) or sum(up{job="opentelemetry-collector"} == 1) < 6
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: One or more OpenTelemetry Collector agents are unavailable
+        - alert: LokiUnavailable
+          expr: absent(up{job=~".*/loki"} == 1)
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Loki is unavailable to Prometheus
+        - alert: TempoUnavailable
+          expr: absent(up{job="tempo"} == 1)
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Tempo is unavailable to Prometheus
+        - alert: OpenTelemetryExporterFailures
+          expr: sum(rate(otelcol_exporter_send_failed_log_records_total[5m])) + sum(rate(otelcol_exporter_send_failed_spans_total[5m])) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: OpenTelemetry Collector is persistently failing to export telemetry
+        - alert: TelemetryStorageCapacityCritical
+          expr: kubelet_volume_stats_available_bytes{namespace="monitoring",persistentvolumeclaim=~".*(loki|tempo).*"} / kubelet_volume_stats_capacity_bytes{namespace="monitoring",persistentvolumeclaim=~".*(loki|tempo).*"} < 0.10
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: Observability PVC {{ $labels.persistentvolumeclaim }} has under 10% free

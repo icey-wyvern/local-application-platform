@@ -1,0 +1,22 @@
+# Managed by Ansible.
+global_defs {
+    router_id {{ inventory_hostname }}
+}
+
+vrrp_instance LAP_K8S_API {
+    state {{ 'MASTER' if inventory_hostname == 'lb-1' else 'BACKUP' }}
+    interface {{ lap_lab_interface }}
+    virtual_router_id {{ lap_keepalived_virtual_router_id }}
+    priority {{ lap_keepalived_priorities[inventory_hostname] }}
+    advert_int 1
+    unicast_src_ip {{ ansible_host }}
+    unicast_peer {
+{% for host in groups['load_balancers'] | difference([inventory_hostname]) %}
+        {{ hostvars[host].ansible_host }}
+{% endfor %}
+    }
+    virtual_ipaddress {
+        {{ lab.network.api_virtual_ip }}/{{ lab.network.vm_cidr.split('/')[1] }} dev {{ lap_lab_interface }}
+    }
+}
+

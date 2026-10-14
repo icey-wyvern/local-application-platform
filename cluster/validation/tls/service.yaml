@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: tls-smoke
+  namespace: tls-validation
+spec:
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+  selector:
+    app.kubernetes.io/name: tls-smoke
+  type: ClusterIP

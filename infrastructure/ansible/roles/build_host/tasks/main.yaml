@@ -1,0 +1,607 @@
+---
+- name: Validate authoritative build-host inputs
+  ansible.builtin.assert:
+    that:
+      - groups['build_machines'] | length == 1
+      - inventory_hostname == groups['build_machines'][0]
+      - lab.registry.implementation == 'distribution'
+      - lab.registry.host == lab.hostnames.registry
+      - versions.registry == '3.0.0'
+      - versions.buildkit == '0.30.0'
+      - versions.skopeo == '1.23.0'
+      - versions.trivy == '0.73.0'
+      - lookup('ansible.builtin.env', 'BUILD_HOST_SECRET_DIR') | length > 0
+      - lookup('ansible.builtin.env', 'BUILD_HOST_PKI_DIR') | length > 0
+    fail_msg: Build-host configuration or controller secret/PKI paths are incomplete.
+
+- name: Read current routed administrator connection
+  ansible.builtin.command:
+    argv: [printenv, SSH_CONNECTION]
+  become: false
+  register: lap_build_ssh_connection
+  changed_when: false
+
+- name: Derive current routed administrator address
+  ansible.builtin.set_fact:
+    lap_build_admin_address: "{{ lap_build_ssh_connection.stdout.split()[0] }}"
+
+- name: Validate administrator address
+  ansible.builtin.assert:
+    that:
+      - lap_build_admin_address is match('^[0-9]+(\.[0-9]+){3}$')
+    fail_msg: Cannot safely identify the current Ansible source address.
+
+- name: Install build-host operating-system prerequisites
+  ansible.builtin.apt:
+    name:
+      - acl
+      - apache2-utils
+      - ca-certificates
+      - git
+      - fuse-overlayfs
+      - libassuan-dev
+      - libbtrfs-dev
+      - libgpgme-dev
+      - make
+      - nftables
+      - pkg-config
+      - python3-venv
+      - rootlesskit
+      - slirp4netns
+      - uidmap
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    policy_rc_d: 101
+
+- name: Create isolated service groups
+  ansible.builtin.group:
+    name: "{{ item }}"
+    system: true
+    state: present
+  loop:
+    - "{{ lap_buildkit_shared_group }}"
+    - "{{ lab.registry.service_user }}"
+    - "{{ lab.build_agent.service_user }}"
+
+- name: Create isolated service accounts
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    group: "{{ item.group }}"
+    groups: "{{ item.groups | default(omit) }}"
+    append: "{{ item.groups is defined }}"
+    home: "{{ item.home }}"
+    create_home: true
+    shell: /usr/sbin/nologin
+    system: true
+    state: present
+  loop:
+    - name: "{{ lab.registry.service_user }}"
+      group: "{{ lab.registry.service_user }}"
+      home: "{{ lab.registry.data_path }}"
+    - name: "{{ lab.build_host.buildkit_user }}"
+      group: "{{ lap_buildkit_shared_group }}"
+      home: "{{ lab.build_host.buildkit_state_path }}"
+    - name: "{{ lab.build_agent.service_user }}"
+      group: "{{ lab.build_agent.service_user }}"
+      groups: "{{ lap_buildkit_shared_group }}"
+      home: "{{ lab.build_agent.state_path }}"
+
+- name: Allocate subordinate IDs to rootless BuildKit
+  ansible.builtin.lineinfile:
+    path: "{{ item }}"
+    regexp: "^{{ lab.build_host.buildkit_user }}:"
+    line: "{{ lab.build_host.buildkit_user }}:200000:65536"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - /etc/subuid
+    - /etc/subgid
+  notify: restart BuildKit
+
+- name: Create build-host filesystem layout
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - path: /var/cache/lap-install
+      owner: root
+      group: root
+      mode: "0755"
+    - path: /usr/local/libexec
+      owner: root
+      group: root
+      mode: "0755"
+    - path: /opt/lap/registry/{{ versions.registry }}
+      owner: root
+      group: root
+      mode: "0755"
+    - path: /opt/lap/buildkit/{{ versions.buildkit }}
+      owner: root
+      group: root
+      mode: "0755"
+    - path: /opt/lap/trivy/{{ versions.trivy }}
+      owner: root
+      group: root
+      mode: "0755"
+    - path: /opt/lap/go/{{ versions.go }}
+      owner: root
+      group: root
+      mode: "0755"
+    - path: /opt/lap/src/skopeo-{{ versions.skopeo }}
+      owner: root
+      group: root
+      mode: "0755"
+    - path: /etc/lap-registry/auth
+      owner: root
+      group: "{{ lab.registry.service_user }}"
+      mode: "0750"
+    - path: "{{ lap_registry_tls_path }}"
+      owner: root
+      group: "{{ lab.registry.service_user }}"
+      mode: "0750"
+    - path: /etc/lap-buildkit
+      owner: root
+      group: "{{ lap_buildkit_shared_group }}"
+      mode: "0750"
+    - path: /etc/lap-build-agent
+      owner: root
+      group: "{{ lab.build_agent.service_user }}"
+      mode: "0750"
+    - path: "{{ lap_build_agent_tls_path }}"
+      owner: root
+      group: "{{ lab.build_agent.service_user }}"
+      mode: "0750"
+    - path: /opt/lap/build-agent
+      owner: root
+      group: root
+      mode: "0755"
+    - path: /etc/containers
+      owner: root
+      group: root
+      mode: "0755"
+    - path: "{{ lab.registry.data_path }}"
+      owner: "{{ lab.registry.service_user }}"
+      group: "{{ lab.registry.service_user }}"
+      mode: "0750"
+    - path: "{{ lab.build_host.buildkit_state_path }}/state"
+      owner: "{{ lab.build_host.buildkit_user }}"
+      group: "{{ lap_buildkit_shared_group }}"
+      mode: "0750"
+    - path: "{{ lab.build_agent.state_path }}"
+      owner: "{{ lab.build_agent.service_user }}"
+      group: "{{ lab.build_agent.service_user }}"
+      mode: "0750"
+    - path: "{{ lab.build_host.artifact_path }}"
+      owner: "{{ lab.build_agent.service_user }}"
+      group: "{{ lab.build_agent.service_user }}"
+      mode: "0750"
+    - path: "{{ lab.build_agent.state_path }}/workspaces"
+      owner: "{{ lab.build_agent.service_user }}"
+      group: "{{ lab.build_agent.service_user }}"
+      mode: "0700"
+    - path: "{{ lab.build_agent.state_path }}/results"
+      owner: "{{ lab.build_agent.service_user }}"
+      group: "{{ lab.build_agent.service_user }}"
+      mode: "0750"
+    - path: "{{ lab.build_agent.state_path }}/.ansible/tmp"
+      owner: "{{ lab.build_agent.service_user }}"
+      group: "{{ lab.build_agent.service_user }}"
+      mode: "0700"
+    - path: "{{ lab.build_host.trivy_cache_path }}"
+      owner: "{{ lab.build_agent.service_user }}"
+      group: "{{ lab.build_agent.service_user }}"
+      mode: "0750"
+
+- name: Download checksum-pinned upstream tool archives
+  ansible.builtin.get_url:
+    url: "{{ item.url }}"
+    dest: "{{ item.dest }}"
+    checksum: "sha256:{{ item.sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - url: https://github.com/distribution/distribution/releases/download/v{{ versions.registry }}/registry_{{ versions.registry }}_linux_amd64.tar.gz
+      dest: /var/cache/lap-install/registry-{{ versions.registry }}.tar.gz
+      sha256: "{{ lap_registry_archive_sha256 }}"
+    - url: https://github.com/moby/buildkit/releases/download/v{{ versions.buildkit }}/buildkit-v{{ versions.buildkit }}.linux-amd64.tar.gz
+      dest: /var/cache/lap-install/buildkit-{{ versions.buildkit }}.tar.gz
+      sha256: "{{ lap_buildkit_archive_sha256 }}"
+    - url: https://github.com/aquasecurity/trivy/releases/download/v{{ versions.trivy }}/trivy_{{ versions.trivy }}_Linux-64bit.tar.gz
+      dest: /var/cache/lap-install/trivy-{{ versions.trivy }}.tar.gz
+      sha256: "{{ lap_trivy_archive_sha256 }}"
+    - url: https://go.dev/dl/go{{ versions.go }}.linux-amd64.tar.gz
+      dest: /var/cache/lap-install/go-{{ versions.go }}.tar.gz
+      sha256: "{{ lap_go_archive_sha256 }}"
+    - url: https://codeload.github.com/containers/skopeo/tar.gz/refs/tags/v{{ versions.skopeo }}
+      dest: /var/cache/lap-install/skopeo-{{ versions.skopeo }}.tar.gz
+      sha256: "{{ lap_skopeo_source_sha256 }}"
+
+- name: Extract pinned upstream tools
+  ansible.builtin.unarchive:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    remote_src: true
+    extra_opts: "{{ item.extra_opts | default(omit) }}"
+    creates: "{{ item.creates }}"
+    owner: root
+    group: root
+  loop:
+    - src: /var/cache/lap-install/registry-{{ versions.registry }}.tar.gz
+      dest: /opt/lap/registry/{{ versions.registry }}
+      creates: /opt/lap/registry/{{ versions.registry }}/registry
+    - src: /var/cache/lap-install/buildkit-{{ versions.buildkit }}.tar.gz
+      dest: /opt/lap/buildkit/{{ versions.buildkit }}
+      creates: /opt/lap/buildkit/{{ versions.buildkit }}/buildkitd
+      extra_opts: [--strip-components=1]
+    - src: /var/cache/lap-install/trivy-{{ versions.trivy }}.tar.gz
+      dest: /opt/lap/trivy/{{ versions.trivy }}
+      creates: /opt/lap/trivy/{{ versions.trivy }}/trivy
+    - src: /var/cache/lap-install/go-{{ versions.go }}.tar.gz
+      dest: /opt/lap/go/{{ versions.go }}
+      creates: /opt/lap/go/{{ versions.go }}/bin/go
+      extra_opts: [--strip-components=1]
+    - src: /var/cache/lap-install/skopeo-{{ versions.skopeo }}.tar.gz
+      dest: /opt/lap/src/skopeo-{{ versions.skopeo }}
+      creates: /opt/lap/src/skopeo-{{ versions.skopeo }}/cmd/skopeo/main.go
+      extra_opts: [--strip-components=1]
+
+- name: Read installed Skopeo version
+  ansible.builtin.command:
+    argv: [/usr/local/bin/skopeo, --version]
+  register: lap_skopeo_version
+  changed_when: false
+  failed_when: false
+
+- name: Build the pinned Skopeo source
+  ansible.builtin.command:
+    argv:
+      - make
+      - bin/skopeo
+      - DISABLE_DOCS=1
+      - BUILDTAGS=containers_image_openpgp exclude_graphdriver_btrfs
+    chdir: /opt/lap/src/skopeo-{{ versions.skopeo }}
+  environment:
+    PATH: /opt/lap/go/{{ versions.go }}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+  when: versions.skopeo not in lap_skopeo_version.stdout
+  register: lap_skopeo_build
+
+- name: Install the pinned Skopeo binary
+  ansible.builtin.copy:
+    src: /opt/lap/src/skopeo-{{ versions.skopeo }}/bin/skopeo
+    dest: /usr/local/bin/skopeo
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+  when: lap_skopeo_build is changed
+
+- name: Install versioned tool command links
+  ansible.builtin.file:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    state: link
+    force: true
+  loop:
+    - src: /opt/lap/buildkit/{{ versions.buildkit }}/buildctl
+      dest: /usr/local/bin/buildctl
+    - src: /opt/lap/trivy/{{ versions.trivy }}/trivy
+      dest: /usr/local/bin/trivy
+
+- name: Configure Skopeo signature policy
+  ansible.builtin.copy:
+    dest: /etc/containers/policy.json
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      {
+        "default": [{"type": "reject"}],
+        "transports": {
+          "docker": {"{{ lab.registry.host }}:{{ lab.registry.port }}": [{"type": "insecureAcceptAnything"}]},
+          "oci-archive": {"": [{"type": "insecureAcceptAnything"}]}
+        }
+      }
+
+- name: Resolve build-host service identities locally
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^[^#]*\s{{ lab.registry.host | regex_escape }}(?:\s|$)'
+    line: "{{ ansible_host }} {{ lab.registry.host }} {{ lab.hostnames.build_agent }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install registry server certificate
+  ansible.builtin.copy:
+    src: "{{ lookup('ansible.builtin.env', 'BUILD_HOST_PKI_DIR') }}/registry-lab-test.crt"
+    dest: "{{ lap_registry_tls_path }}/registry.crt"
+    owner: root
+    group: "{{ lab.registry.service_user }}"
+    mode: "0644"
+  notify: restart registry
+
+- name: Install registry server private key
+  ansible.builtin.copy:
+    src: "{{ lookup('ansible.builtin.env', 'BUILD_HOST_PKI_DIR') }}/registry-lab-test.key"
+    dest: "{{ lap_registry_tls_path }}/registry.key"
+    owner: root
+    group: "{{ lab.registry.service_user }}"
+    mode: "0640"
+  no_log: true
+  notify: restart registry
+
+- name: Install build-agent server certificate
+  ansible.builtin.copy:
+    src: "{{ lookup('ansible.builtin.env', 'BUILD_HOST_PKI_DIR') }}/build-agent-lab-test.crt"
+    dest: "{{ lap_build_agent_tls_path }}/server.crt"
+    owner: root
+    group: "{{ lab.build_agent.service_user }}"
+    mode: "0644"
+  notify: restart build agent
+
+- name: Install build-agent server private key
+  ansible.builtin.copy:
+    src: "{{ lookup('ansible.builtin.env', 'BUILD_HOST_PKI_DIR') }}/build-agent-lab-test.key"
+    dest: "{{ lap_build_agent_tls_path }}/server.key"
+    owner: root
+    group: "{{ lab.build_agent.service_user }}"
+    mode: "0640"
+  no_log: true
+  notify: restart build agent
+
+- name: Install build-agent client trust anchor
+  ansible.builtin.copy:
+    src: "{{ lookup('ansible.builtin.env', 'BUILD_HOST_PKI_DIR') }}/lab-root-ca.crt"
+    dest: "{{ lap_build_agent_tls_path }}/client-ca.crt"
+    owner: root
+    group: "{{ lab.build_agent.service_user }}"
+    mode: "0644"
+  notify: restart build agent
+
+- name: Ensure registry authentication database exists
+  ansible.builtin.file:
+    path: "{{ lap_registry_auth_path }}"
+    state: touch
+    access_time: preserve
+    modification_time: preserve
+    owner: root
+    group: "{{ lab.registry.service_user }}"
+    mode: "0640"
+
+- name: Verify registry publisher credential
+  ansible.builtin.command:
+    argv: [htpasswd, -vi, "{{ lap_registry_auth_path }}", "{{ lab.registry.publisher_identity }}"]
+    stdin: "{{ lap_registry_publisher_password }}"
+  register: lap_registry_publisher_verify
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Reconcile registry publisher credential
+  ansible.builtin.command:
+    argv: [htpasswd, -Bi, "{{ lap_registry_auth_path }}", "{{ lab.registry.publisher_identity }}"]
+    stdin: "{{ lap_registry_publisher_password }}"
+  when: lap_registry_publisher_verify.rc != 0
+  no_log: true
+  notify: restart registry
+
+- name: Verify registry pull credential
+  ansible.builtin.command:
+    argv: [htpasswd, -vi, "{{ lap_registry_auth_path }}", "{{ lab.registry.pull_identity }}"]
+    stdin: "{{ lap_registry_pull_password }}"
+  register: lap_registry_pull_verify
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Reconcile registry pull credential
+  ansible.builtin.command:
+    argv: [htpasswd, -Bi, "{{ lap_registry_auth_path }}", "{{ lab.registry.pull_identity }}"]
+    stdin: "{{ lap_registry_pull_password }}"
+  when: lap_registry_pull_verify.rc != 0
+  no_log: true
+  notify: restart registry
+
+- name: Check persistent registry HTTP secret
+  ansible.builtin.stat:
+    path: /etc/lap-registry/http-secret
+  register: lap_registry_http_secret_file
+
+- name: Generate persistent registry HTTP secret
+  ansible.builtin.command:
+    argv: [openssl, rand, -hex, "32"]
+  register: lap_registry_http_secret_generated
+  when: not lap_registry_http_secret_file.stat.exists
+  no_log: true
+
+- name: Store persistent registry HTTP secret
+  ansible.builtin.copy:
+    dest: /etc/lap-registry/http-secret
+    content: "{{ lap_registry_http_secret_generated.stdout }}\n"
+    owner: root
+    group: "{{ lab.registry.service_user }}"
+    mode: "0640"
+  when: not lap_registry_http_secret_file.stat.exists
+  no_log: true
+
+- name: Read persistent registry HTTP secret
+  ansible.builtin.slurp:
+    src: /etc/lap-registry/http-secret
+  register: lap_registry_http_secret_encoded
+  no_log: true
+
+- name: Retain registry HTTP secret for configuration rendering
+  ansible.builtin.set_fact:
+    lap_registry_http_secret: "{{ lap_registry_http_secret_encoded.content | b64decode | trim }}"
+  no_log: true
+
+- name: Configure OCI registry
+  ansible.builtin.template:
+    src: registry-config.yml.j2
+    dest: "{{ lap_registry_config_path }}"
+    owner: root
+    group: "{{ lab.registry.service_user }}"
+    mode: "0640"
+  no_log: true
+  notify: restart registry
+
+- name: Configure rootless BuildKit
+  ansible.builtin.template:
+    src: buildkitd.toml.j2
+    dest: "{{ lap_buildkit_config_path }}"
+    owner: root
+    group: "{{ lap_buildkit_shared_group }}"
+    mode: "0640"
+  notify: restart BuildKit
+
+- name: Create build-agent source package directory
+  ansible.builtin.file:
+    path: /opt/lap/build-agent/source/src/lap_build_agent
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install build-agent package metadata
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../../platform/build-agent/pyproject.toml"
+    dest: /opt/lap/build-agent/source/pyproject.toml
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart build agent
+  register: lap_build_agent_metadata
+
+- name: Install build-agent Python modules
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../../platform/build-agent/src/lap_build_agent/{{ item }}"
+    dest: "/opt/lap/build-agent/source/src/lap_build_agent/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - __init__.py
+    - app.py
+    - config.py
+    - errors.py
+    - logging.py
+    - main.py
+    - models.py
+    - pipeline.py
+    - policy.py
+    - telemetry.py
+    - validation.py
+  notify: restart build agent
+  register: lap_build_agent_modules
+
+- name: Inspect build-agent virtual environment
+  ansible.builtin.stat:
+    path: /opt/lap/build-agent/venv/bin/lap-build-agent
+  register: lap_build_agent_venv
+
+- name: Install build-agent virtual environment from pinned project dependencies
+  ansible.builtin.pip:
+    name: /opt/lap/build-agent/source
+    virtualenv: /opt/lap/build-agent/venv
+    virtualenv_command: python3 -m venv
+  when: >-
+    lap_build_agent_metadata is changed
+    or lap_build_agent_modules is changed
+    or not lap_build_agent_venv.stat.exists
+  notify: restart build agent
+
+- name: Configure build-agent environment
+  ansible.builtin.template:
+    src: build-agent.env.j2
+    dest: /etc/lap-build-agent/agent.env
+    owner: root
+    group: "{{ lab.build_agent.service_user }}"
+    mode: "0640"
+  notify: restart build agent
+
+- name: Configure Ubuntu rootless user-namespace prerequisite
+  ansible.builtin.template:
+    src: sysctl.conf.j2
+    dest: /etc/sysctl.d/90-lap-buildkit.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: apply rootless BuildKit sysctl
+
+- name: Install rootless BuildKit namespace entrypoint
+  ansible.builtin.template:
+    src: buildkit-entrypoint.sh.j2
+    dest: /usr/local/libexec/lap-buildkit-entrypoint
+    owner: root
+    group: root
+    mode: "0755"
+  notify: restart BuildKit
+
+- name: Install build-host systemd units
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "/etc/systemd/system/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - src: lap-registry.service.j2
+      dest: lap-registry.service
+    - src: lap-buildkit.service.j2
+      dest: lap-buildkit.service
+    - src: lap-build-agent.service.j2
+      dest: lap-build-agent.service
+  notify:
+    - reload build-host systemd
+    - restart registry
+    - restart BuildKit
+    - restart build agent
+
+- name: Configure project-owned build-host firewall
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/nft -c -f %s
+  notify: reload build-host nftables
+
+- name: Apply pending unit and firewall configuration
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start build-host services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - nftables
+    - lap-registry
+    - lap-buildkit
+    - lap-build-agent
+
+- name: Apply pending service configuration
+  ansible.builtin.meta: flush_handlers
+
+- name: Authenticate the build-agent registry publisher
+  ansible.builtin.command:
+    argv:
+      - skopeo
+      - login
+      - --authfile
+      - "{{ lab.build_agent.state_path }}/registry-auth.json"
+      - --username
+      - "{{ lab.registry.publisher_identity }}"
+      - --password-stdin
+      - "{{ lab.registry.host }}:{{ lab.registry.port }}"
+    stdin: "{{ lap_registry_publisher_password }}"
+  become_user: "{{ lab.build_agent.service_user }}"
+  changed_when: false
+  no_log: true

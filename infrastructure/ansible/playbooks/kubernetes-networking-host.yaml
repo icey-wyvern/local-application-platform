@@ -1,0 +1,10 @@
+---
+- name: Configure minimal host firewall support for Cilium
+  hosts: control_planes:workers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Configure Cilium host firewall allowances
+      ansible.builtin.include_role:
+        name: kubernetes_node
+        tasks_from: networking-firewall

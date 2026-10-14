@@ -1,0 +1,273 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: opentelemetry-collector
+  namespace: monitoring
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lap-opentelemetry-collector
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "nodes", "pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["daemonsets", "deployments", "replicasets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs", "jobs"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: lap-opentelemetry-collector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: lap-opentelemetry-collector
+subjects:
+  - kind: ServiceAccount
+    name: opentelemetry-collector
+    namespace: monitoring
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opentelemetry-collector
+  namespace: monitoring
+data:
+  config.yaml: |
+    extensions:
+      file_storage:
+        directory: /var/lib/otelcol/file-storage
+        create_directory: true
+      health_check:
+        endpoint: 0.0.0.0:13133
+    receivers:
+      filelog:
+        include:
+          - /var/log/pods/*/*/*.log
+        exclude:
+          - /var/log/pods/monitoring_opentelemetry-collector-*_*/*/*.log
+        include_file_path: true
+        start_at: end
+        storage: file_storage
+        operators:
+          - type: container
+          - type: json_parser
+            id: application-json
+            parse_from: body
+            parse_to: attributes
+            if: 'body matches "^\\{"'
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+    processors:
+      k8sattributes:
+        auth_type: serviceAccount
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.container.name
+            - k8s.node.name
+            - k8s.deployment.name
+            - k8s.statefulset.name
+            - k8s.daemonset.name
+            - k8s.job.name
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.uid
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 384
+        spike_limit_mib: 96
+      resource:
+        attributes:
+          - action: upsert
+            key: k8s.cluster.name
+            value: local-application-platform
+          - action: upsert
+            key: deployment.environment.name
+            value: lab
+      transform/logs:
+        log_statements:
+          - context: resource
+            statements:
+              - set(attributes["service.name"], attributes["k8s.container.name"]) where attributes["service.name"] == nil and attributes["k8s.container.name"] != nil
+              - set(attributes["service.namespace"], attributes["k8s.namespace.name"]) where attributes["service.namespace"] == nil and attributes["k8s.namespace.name"] != nil
+      batch:
+        send_batch_size: 1024
+        timeout: 2s
+    exporters:
+      prometheus/build-agent:
+        endpoint: 0.0.0.0:8889
+      otlphttp/loki:
+        endpoint: http://loki.monitoring.svc.cluster.local:3100/otlp
+      otlphttp/tempo:
+        endpoint: http://tempo.monitoring.svc.cluster.local:4318
+    service:
+      extensions: [file_storage, health_check]
+      pipelines:
+        logs:
+          receivers: [filelog, otlp]
+          processors: [memory_limiter, k8sattributes, resource, transform/logs, batch]
+          exporters: [otlphttp/loki]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [prometheus/build-agent]
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, resource, batch]
+          exporters: [otlphttp/tempo]
+      telemetry:
+        logs:
+          level: info
+        metrics:
+          level: detailed
+          readers:
+            - pull:
+                exporter:
+                  prometheus:
+                    host: 0.0.0.0
+                    port: 8888
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opentelemetry-collector
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: opentelemetry-collector
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: opentelemetry-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+    - name: metrics
+      port: 8888
+      targetPort: metrics
+    - name: agent-metrics
+      port: 8889
+      targetPort: agent-metrics
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opentelemetry-collector-build-host
+  namespace: monitoring
+spec:
+  type: NodePort
+  externalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/name: opentelemetry-collector
+  ports:
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+      nodePort: 30418
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: opentelemetry-collector
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: opentelemetry-collector
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opentelemetry-collector
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: opentelemetry-collector
+        app.kubernetes.io/part-of: lap-observability
+    spec:
+      serviceAccountName: opentelemetry-collector
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: collector
+          image: docker.io/otel/opentelemetry-collector-contrib:0.159.0
+          imagePullPolicy: IfNotPresent
+          args: ["--config=/conf/config.yaml"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsGroup: 0
+            runAsNonRoot: false
+            runAsUser: 0
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+            - name: metrics
+              containerPort: 8888
+            - name: agent-metrics
+              containerPort: 8889
+            - name: health
+              containerPort: 13133
+          livenessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+              readOnly: true
+            - name: pod-logs
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/otelcol
+      volumes:
+        - name: config
+          configMap:
+            name: opentelemetry-collector
+        - name: pod-logs
+          hostPath:
+            path: /var/log/pods
+            type: Directory
+        - name: state
+          hostPath:
+            path: /var/lib/otelcol-contrib
+            type: DirectoryOrCreate

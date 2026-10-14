@@ -1,0 +1,67 @@
+[Unit]
+Description=Local Application Platform rootless BuildKit
+After=network-online.target nftables.service
+Wants=network-online.target
+Requires=nftables.service
+
+[Service]
+Type=simple
+User={{ lab.build_host.buildkit_user }}
+Group={{ lap_buildkit_shared_group }}
+Environment=HOME={{ lab.build_host.buildkit_state_path }}
+Environment=XDG_RUNTIME_DIR=/run/lap-buildkit
+RuntimeDirectory=lap-buildkit
+RuntimeDirectoryMode=0750
+StateDirectory=lap-buildkit
+StateDirectoryMode=0750
+ExecStart=/usr/bin/rootlesskit --state-dir=/run/lap-buildkit/rootlesskit --propagation=rslave --net=slirp4netns --copy-up=/etc --disable-host-loopback /usr/local/libexec/lap-buildkit-entrypoint
+ExecStartPost=/bin/sh -c 'for n in 1 2 3 4 5; do test -S {{ lab.build_host.buildkit_socket }} && chgrp {{ lap_buildkit_shared_group }} {{ lab.build_host.buildkit_socket }} && chmod 0660 {{ lab.build_host.buildkit_socket }} && exit 0; sleep 1; done; exit 1'
+Restart=on-failure
+RestartSec=3s
+Delegate=true
+CPUQuota={{ lap_buildkit_cpu_quota }}
+MemoryMax={{ lap_buildkit_memory_max }}
+TasksMax=2048
+LimitNOFILE=1048576
+# RootlessKit's slirp4netns TAP setup requires /dev/net/tun.
+PrivateDevices=false
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=false
+ProtectHome=true
+# OCI execution creates a nested UTS namespace and sets its hostname.
+ProtectHostname=false
+ProtectKernelLogs=true
+ProtectKernelModules=true
+# Nested rootless runc must mount its own /proc; the unprivileged service user
+# still cannot change host kernel tunables.
+ProtectKernelTunables=false
+ProtectSystem=strict
+ReadWritePaths={{ lab.build_host.buildkit_state_path }} /run/lap-buildkit
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
+UMask=0027
+# The complete service cgroup, including Dockerfile RUN processes, inherits these BPF denies.
+IPAddressDeny=0.0.0.0/8
+IPAddressDeny=10.0.0.0/8
+IPAddressDeny=100.64.0.0/10
+IPAddressDeny=127.0.0.0/8
+IPAddressDeny=169.254.0.0/16
+IPAddressDeny=172.16.0.0/12
+IPAddressDeny=192.0.0.0/24
+IPAddressDeny=192.0.2.0/24
+IPAddressDeny=192.168.0.0/16
+IPAddressDeny=198.18.0.0/15
+IPAddressDeny=198.51.100.0/24
+IPAddressDeny=203.0.113.0/24
+IPAddressDeny=224.0.0.0/4
+IPAddressDeny=240.0.0.0/4
+IPAddressDeny=::/128
+IPAddressDeny=::1/128
+IPAddressDeny=fc00::/7
+IPAddressDeny=fe80::/10
+IPAddressDeny=ff00::/8
+
+[Install]
+WantedBy=multi-user.target

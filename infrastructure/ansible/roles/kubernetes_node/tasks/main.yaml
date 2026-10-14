@@ -1,0 +1,293 @@
+---
+- name: Validate generated Kubernetes node scope and versions
+  ansible.builtin.assert:
+    that:
+      - groups['control_planes'] | length == 3
+      - groups['workers'] | length == 3
+      - inventory_hostname in groups['control_planes'] + groups['workers']
+      - lap_role in ['control_plane', 'worker']
+      - versions.kubernetes == '1.36.2'
+      - versions.containerd == '2.3.3'
+      - versions.runc == '1.5.1'
+      - versions.cni_plugins == '1.9.1'
+    fail_msg: Generated inventory or pinned node versions do not match the node-preparation contract.
+
+- name: Read current routed administrator connection
+  ansible.builtin.command:
+    argv: [printenv, SSH_CONNECTION]
+  become: false
+  register: lap_node_ssh_connection
+  changed_when: false
+
+- name: Derive current routed administrator address
+  ansible.builtin.set_fact:
+    lap_node_admin_address: "{{ lap_node_ssh_connection.stdout.split()[0] }}"
+
+- name: Validate administrator address
+  ansible.builtin.assert:
+    that:
+      - lap_node_admin_address is match('^[0-9]+(\.[0-9]+){3}$')
+
+- name: Create systemd-resolved configuration directory
+  ansible.builtin.file:
+    path: /etc/systemd/resolved.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Route node DNS through the authoritative lab resolver
+  ansible.builtin.template:
+    src: resolved.conf.j2
+    dest: /etc/systemd/resolved.conf.d/local-application-platform.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart systemd-resolved
+
+- name: Install node preparation packages
+  ansible.builtin.apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - conntrack
+      - curl
+      - ebtables
+      - ethtool
+      - gpg
+      - nftables
+      - socat
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Read active swap devices
+  ansible.builtin.command:
+    argv: [swapon, --show, --noheadings]
+  register: lap_active_swap
+  changed_when: false
+
+- name: Disable active swap
+  ansible.builtin.command:
+    argv: [swapoff, -a]
+  when: lap_active_swap.stdout | length > 0
+  changed_when: true
+
+- name: Disable persistent fstab swap entries
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^(\s*[^#\s]\S*\s+\S+\s+swap\s+\S+.*)$'
+    replace: '# Disabled by LAP Kubernetes node preparation: \1'
+
+- name: Configure required kernel modules
+  ansible.builtin.template:
+    src: modules.conf.j2
+    dest: /etc/modules-load.d/kubernetes.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Check required kernel modules before loading
+  ansible.builtin.stat:
+    path: "/sys/module/{{ item }}"
+  loop:
+    - overlay
+    - br_netfilter
+  register: lap_required_modules
+
+- name: Load required kernel modules
+  ansible.builtin.command:
+    argv: [modprobe, "{{ item.item }}"]
+  loop: "{{ lap_required_modules.results }}"
+  when: not item.stat.exists
+  changed_when: true
+
+- name: Configure Kubernetes networking sysctls
+  ansible.builtin.template:
+    src: sysctl.conf.j2
+    dest: /etc/sysctl.d/90-kubernetes.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: apply kubernetes sysctl settings
+
+- name: Apply sysctls before runtime validation
+  ansible.builtin.meta: flush_handlers
+
+- name: Create runtime, CNI and package-key directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/containerd
+    - /etc/containerd/certs.d
+    - /etc/cni/net.d
+    - /etc/apt/keyrings
+    - /opt/cni/bin
+    - /usr/local/share/lap
+    - /var/cache/lap
+
+- name: Remove obsolete CRI client configuration when crictl is not installed
+  ansible.builtin.file:
+    path: /etc/crictl.yaml
+    state: absent
+
+- name: Install Kubernetes repository signing key
+  ansible.builtin.get_url:
+    url: https://pkgs.k8s.io/core:/stable:/v1.36/deb/Release.key
+    dest: /etc/apt/keyrings/kubernetes-release.asc
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Configure pinned Kubernetes package channel
+  ansible.builtin.template:
+    src: kubernetes.list.j2
+    dest: /etc/apt/sources.list.d/kubernetes.list
+    owner: root
+    group: root
+    mode: "0644"
+  register: lap_kubernetes_repository
+
+- name: Refresh package metadata for Kubernetes channel
+  ansible.builtin.apt:
+    update_cache: true
+  when: lap_kubernetes_repository.changed
+
+- name: Install exact Kubernetes package versions without starting kubelet
+  ansible.builtin.apt:
+    name:
+      - "kubeadm={{ lap_kubernetes_deb_version }}"
+      - "kubectl={{ lap_kubernetes_deb_version }}"
+      - "kubelet={{ lap_kubernetes_deb_version }}"
+      - "kubernetes-cni={{ lap_kubernetes_cni_deb_version }}"
+    state: present
+    allow_downgrade: true
+    policy_rc_d: 101
+
+- name: Hold Kubernetes packages at their selected versions
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop: "{{ lap_kubernetes_packages }}"
+
+- name: Download verified containerd archive
+  ansible.builtin.get_url:
+    url: >-
+      https://github.com/containerd/containerd/releases/download/v{{ versions.containerd }}/{{ lap_containerd_archive }}
+    dest: "/var/cache/lap/{{ lap_containerd_archive }}"
+    checksum: "sha256:{{ lap_containerd_sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install pinned containerd binaries
+  ansible.builtin.unarchive:
+    src: "/var/cache/lap/{{ lap_containerd_archive }}"
+    dest: /usr/local
+    remote_src: true
+    owner: root
+    group: root
+    creates: "/usr/local/share/lap/containerd-{{ versions.containerd }}.installed"
+  register: lap_containerd_extract
+
+- name: Record installed containerd artifact
+  ansible.builtin.copy:
+    content: "{{ versions.containerd }}\n"
+    dest: "/usr/local/share/lap/containerd-{{ versions.containerd }}.installed"
+    owner: root
+    group: root
+    mode: "0644"
+  when: lap_containerd_extract.changed
+
+- name: Install verified pinned runc binary
+  ansible.builtin.get_url:
+    url: "https://github.com/opencontainers/runc/releases/download/v{{ versions.runc }}/runc.amd64"
+    dest: /usr/local/sbin/runc
+    checksum: "sha256:{{ lap_runc_sha256 }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify: restart containerd
+
+- name: Download verified CNI plugin archive
+  ansible.builtin.get_url:
+    url: >-
+      https://github.com/containernetworking/plugins/releases/download/v{{ versions.cni_plugins }}/{{ lap_cni_archive }}
+    dest: "/var/cache/lap/{{ lap_cni_archive }}"
+    checksum: "sha256:{{ lap_cni_sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install pinned CNI plugin binaries
+  ansible.builtin.unarchive:
+    src: "/var/cache/lap/{{ lap_cni_archive }}"
+    dest: /opt/cni/bin
+    remote_src: true
+    owner: root
+    group: root
+    creates: "/usr/local/share/lap/cni-plugins-{{ versions.cni_plugins }}.installed"
+  register: lap_cni_extract
+
+- name: Record installed CNI plugin artifact
+  ansible.builtin.copy:
+    content: "{{ versions.cni_plugins }}\n"
+    dest: "/usr/local/share/lap/cni-plugins-{{ versions.cni_plugins }}.installed"
+    owner: root
+    group: root
+    mode: "0644"
+  when: lap_cni_extract.changed
+
+- name: Configure containerd for Kubernetes
+  ansible.builtin.template:
+    src: containerd.toml.j2
+    dest: /etc/containerd/config.toml
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart containerd
+
+- name: Install containerd systemd unit
+  ansible.builtin.template:
+    src: containerd.service.j2
+    dest: /etc/systemd/system/containerd.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - reload systemd
+    - restart containerd
+
+- name: Configure project-owned Kubernetes-node firewall
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/sbin/nft -c -f %s
+  notify: reload kubernetes node nftables
+
+- name: Apply runtime and firewall handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start containerd
+  ansible.builtin.systemd_service:
+    name: containerd
+    enabled: true
+    state: started
+
+- name: Enable project-owned node firewall
+  ansible.builtin.systemd_service:
+    name: nftables
+    enabled: true
+    state: started
+
+- name: Enable kubelet for later kubeadm bootstrap
+  ansible.builtin.systemd_service:
+    name: kubelet
+    enabled: true

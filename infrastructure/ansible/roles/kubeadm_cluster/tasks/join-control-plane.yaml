@@ -1,0 +1,37 @@
+---
+- name: Install ephemeral control-plane join configuration
+  ansible.builtin.template:
+    src: join-control-plane.yaml.j2
+    dest: "{{ lap_kubeadm_join_config_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
+- name: Join stacked-etcd control plane
+  block:
+    - name: Validate control-plane join configuration
+      ansible.builtin.command:
+        argv:
+          - kubeadm
+          - config
+          - validate
+          - --config
+          - "{{ lap_kubeadm_join_config_path }}"
+      changed_when: false
+      no_log: true
+
+    - name: Run control-plane kubeadm join
+      ansible.builtin.command:
+        argv:
+          - kubeadm
+          - join
+          - --config
+          - "{{ lap_kubeadm_join_config_path }}"
+      no_log: true
+  always:
+    - name: Remove ephemeral control-plane join configuration
+      ansible.builtin.file:
+        path: "{{ lap_kubeadm_join_config_path }}"
+        state: absent
+      no_log: true

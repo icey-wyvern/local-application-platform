@@ -1,0 +1,12 @@
+---
+lap_kubeadm_primary: "{{ groups['control_planes'] | sort | first }}"
+lap_kubeadm_api_port: 6443
+lap_kubeadm_control_plane_endpoint: >-
+  {{ lab.network.api_virtual_ip }}:{{ lap_kubeadm_api_port }}
+lap_kubeadm_init_config_path: /etc/kubernetes/lap-kubeadm-init.yaml
+lap_kubeadm_join_config_path: /run/lap-kubeadm-join.yaml
+lap_kubeadm_encryption_config_path: /etc/kubernetes/encryption-config.yaml
+lap_kubeadm_token_ttl: 15m
+lap_wsl_home: "{{ lookup('env', 'HOME') }}"
+lap_wsl_kubectl_path: "{{ lap_wsl_home }}/.local/bin/kubectl"
+lap_wsl_kubeconfig_path: "{{ lap_wsl_home }}/.kube/lap-admin.conf"

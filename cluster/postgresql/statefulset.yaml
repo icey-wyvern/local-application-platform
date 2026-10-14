@@ -1,0 +1,157 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgresql
+  namespace: platform-database
+spec:
+  serviceName: postgresql
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgresql
+        app.kubernetes.io/component: database
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      nodeSelector:
+        node.longhorn.io/create-default-disk: "true"
+      securityContext:
+        fsGroup: 999
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: prepare-data-directory
+          image: postgres:18.6-bookworm@sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650
+          imagePullPolicy: IfNotPresent
+          command: [sh, -ec, "mkdir -p /var/lib/postgresql/18/docker && chown -R 999:999 /var/lib/postgresql"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN, DAC_OVERRIDE, FOWNER]
+            runAsGroup: 0
+            runAsUser: 0
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql
+      containers:
+        - name: postgresql
+          image: postgres:18.6-bookworm@sha256:3725f4e2499eef5134592b3b4ab79a543ed7f8e533b05b5b637af926630f6650
+          imagePullPolicy: IfNotPresent
+          args:
+            - -c
+            - config_file=/etc/postgresql/postgresql.conf
+            - -c
+            - hba_file=/etc/postgresql/pg_hba.conf
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/18/docker
+            - name: POSTGRES_DB
+              value: platform
+            - name: POSTGRES_USER
+              value: postgres
+            - name: POSTGRES_PASSWORD_FILE
+              value: /run/secrets/administrative/password
+            - name: POSTGRES_APP_USER
+              value: platform_api
+            - name: POSTGRES_INITDB_ARGS
+              value: --data-checksums --auth-host=scram-sha-256 --auth-local=trust
+          ports:
+            - name: postgresql
+              containerPort: 5432
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          startupProbe:
+            exec:
+              command: [pg_isready, -h, 127.0.0.1, -U, postgres, -d, platform]
+            failureThreshold: 60
+            periodSeconds: 5
+          readinessProbe:
+            exec:
+              command: [pg_isready, -h, 127.0.0.1, -U, postgres, -d, platform]
+            failureThreshold: 3
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            exec:
+              command: [pg_isready, -h, 127.0.0.1, -U, postgres, -d, platform]
+            failureThreshold: 6
+            periodSeconds: 10
+            timeoutSeconds: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: false
+            runAsGroup: 999
+            runAsNonRoot: true
+            runAsUser: 999
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql
+            - name: configuration
+              mountPath: /etc/postgresql
+              readOnly: true
+            - name: initialization
+              mountPath: /docker-entrypoint-initdb.d/10-create-application-role.sh
+              subPath: 10-create-application-role.sh
+              readOnly: true
+            - name: administrative-secret
+              mountPath: /run/secrets/administrative
+              readOnly: true
+            - name: application-secret
+              mountPath: /run/secrets/application
+              readOnly: true
+            - name: server-tls
+              mountPath: /etc/postgresql/tls
+              readOnly: true
+      volumes:
+        - name: configuration
+          configMap:
+            name: postgresql-configuration
+            items:
+              - key: postgresql.conf
+                path: postgresql.conf
+              - key: pg_hba.conf
+                path: pg_hba.conf
+        - name: initialization
+          configMap:
+            name: postgresql-configuration
+            defaultMode: 0555
+            items:
+              - key: 10-create-application-role.sh
+                path: 10-create-application-role.sh
+        - name: administrative-secret
+          secret:
+            secretName: postgresql-administrative
+            defaultMode: 0440
+        - name: application-secret
+          secret:
+            secretName: postgresql-application
+            defaultMode: 0440
+        - name: server-tls
+          secret:
+            secretName: postgresql-tls
+            defaultMode: 0440
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: longhorn
+        resources:
+          requests:
+            storage: 10Gi

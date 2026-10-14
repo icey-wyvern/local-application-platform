@@ -1,0 +1,156 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  python-foundation:
+    name: Python foundation
+    runs-on: ubuntu-24.04
+    env:
+      UV_PYTHON: '3.14.7'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Use pinned Python
+        run: uv python install 3.14.7
+
+      - name: Prepare local lab configuration
+        run: cp config/lab.example.yaml config/lab.yaml
+
+      - name: Run configuration validation
+        run: uv run --locked --all-packages lap-config validate
+
+      - name: Check configuration generation
+        run: |
+          uv run --locked --all-packages lap-config generate
+          snapshot=$(mktemp -d)
+          cp -a .generated "$snapshot/"
+          uv run --locked --all-packages lap-config generate
+          diff -r "$snapshot/.generated" .generated
+
+      - name: Check Ruff formatting
+        run: uv run --locked --all-packages ruff format --check .
+
+      - name: Run Ruff
+        run: uv run --locked --all-packages ruff check .
+
+      - name: Run mypy
+        run: uv run --locked --all-packages mypy tools/config/src tools/config/tests platform/build-agent/src platform/build-agent/tests platform/api/src platform/api/tests tools/serve-build-agent-fixtures.py
+
+      - name: Run unit tests
+        run: uv run --locked --all-packages pytest -m "not kind and not full_lab and not destructive"
+
+      - name: Check public candidate boundary
+        run: uv run --locked --all-packages python tools/scan-secret-exposure.py --public-only
+
+  go-controller:
+    name: Go controller
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.7'
+          cache-dependency-path: platform/controller/go.sum
+
+      - name: Install pinned envtest assets
+        run: |
+          sh tools/install-controller-envtest.sh 1.36.2 .local-tools/envtest/1.36.2 5e99f4eef3d6f9d4dd063730299f708c98da8801f2f14d8fc762cb354f30c332
+          sh tools/install-gateway-api-envtest-crds.sh 1.5.1 .local-tools/gateway-api/1.5.1 751002b3b91a87f7ae3bd2517c79a47a8d7ed6702901808a1cf9bd97d284f9b8
+
+      - name: Check Go formatting
+        run: test -z "$(gofmt -l platform/controller)"
+
+      - name: Run Go vet
+        working-directory: platform/controller
+        run: go vet ./...
+
+      - name: Run Go tests
+        working-directory: platform/controller
+        env:
+          KUBEBUILDER_ASSETS: ${{ github.workspace }}/.local-tools/envtest/1.36.2
+          GATEWAY_API_CRD_DIRECTORY: ${{ github.workspace }}/.local-tools/gateway-api/1.5.1
+        run: go test ./... -count=1
+
+  terraform-foundation:
+    name: Terraform foundation
+    runs-on: ubuntu-24.04
+    env:
+      UV_PYTHON: '3.14.7'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Use pinned Python
+        run: uv python install 3.14.7
+
+      - name: Prepare local lab configuration
+        run: cp config/lab.example.yaml config/lab.yaml
+
+      - name: Generate configuration
+        run: uv run --locked --all-packages lap-config generate
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.15.9
+
+      - name: Check Terraform formatting
+        run: terraform -chdir=infrastructure/terraform fmt -check -recursive
+
+      - name: Initialize Terraform
+        run: terraform -chdir=infrastructure/terraform init -backend=false
+
+      - name: Validate Terraform
+        run: terraform -chdir=infrastructure/terraform validate
+
+      - name: Run mocked Terraform tests
+        working-directory: infrastructure/terraform
+        run: terraform test -var-file="$GITHUB_WORKSPACE/.generated/terraform/lab.auto.tfvars.json"
+
+  manifests:
+    name: Kustomize manifests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install pinned kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: v1.36.2
+
+      - name: Render all Kustomize directories
+        run: |
+          while IFS= read -r -d '' file; do
+            kubectl kustomize "$(dirname "$file")" >/dev/null
+          done < <(find cluster -name kustomization.yaml -print0)

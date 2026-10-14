@@ -1,0 +1,58 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: platform
+  namespace: envoy-gateway-system
+spec:
+  gatewayClassName: lap-envoy
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: platform
+  listeners:
+    - allowedRoutes:
+        namespaces:
+          from: All
+      name: http
+      port: 80
+      protocol: HTTP
+    - allowedRoutes:
+        namespaces:
+          from: All
+      hostname: "*.apps.lab.test"
+      name: https
+      port: 443
+      protocol: HTTPS
+      tls:
+        certificateRefs:
+          - group: ""
+            kind: Secret
+            name: apps-wildcard-tls
+        mode: Terminate
+    - allowedRoutes:
+        namespaces:
+          from: All
+      hostname: grafana.lab.test
+      name: grafana-https
+      port: 443
+      protocol: HTTPS
+      tls:
+        certificateRefs:
+          - group: ""
+            kind: Secret
+            name: grafana-tls
+        mode: Terminate
+    - allowedRoutes:
+        namespaces:
+          from: All
+      hostname: api.lab.test
+      name: api-https
+      port: 443
+      protocol: HTTPS
+      tls:
+        certificateRefs:
+          - group: ""
+            kind: Secret
+            name: api-tls
+        mode: Terminate

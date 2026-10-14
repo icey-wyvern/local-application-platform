@@ -1,0 +1,17 @@
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: JoinConfiguration
+caCertPath: /etc/kubernetes/pki/ca.crt
+discovery:
+  bootstrapToken:
+    apiServerEndpoint: "{{ lap_kubeadm_control_plane_endpoint }}"
+    token: "{{ hostvars[lap_kubeadm_primary].lap_join_token }}"
+    caCertHashes:
+      - "{{ hostvars[lap_kubeadm_primary].lap_join_ca_hash }}"
+    unsafeSkipCAVerification: false
+  tlsBootstrapToken: "{{ hostvars[lap_kubeadm_primary].lap_join_token }}"
+nodeRegistration:
+  criSocket: unix:///run/containerd/containerd.sock
+  imagePullPolicy: IfNotPresent
+  imagePullSerial: true
+  name: "{{ inventory_hostname }}"

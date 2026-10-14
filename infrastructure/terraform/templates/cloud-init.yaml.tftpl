@@ -1,0 +1,16 @@
+#cloud-config
+hostname: ${jsonencode(hostname)}
+manage_etc_hosts: true
+users:
+  - name: ${jsonencode(ssh_user)}
+    groups: sudo
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ${jsonencode(ssh_public_key)}
+ssh_pwauth: false
+growpart:
+  mode: auto
+  devices: ['/']
+resize_rootfs: true

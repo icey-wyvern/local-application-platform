@@ -1,0 +1,42 @@
+---
+- name: Inspect kubeadm node artifacts
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - /etc/kubernetes/kubelet.conf
+    - /etc/kubernetes/admin.conf
+    - /etc/kubernetes/manifests/kube-apiserver.yaml
+  register: lap_kubeadm_artifacts
+
+- name: Record kubeadm artifact state
+  ansible.builtin.set_fact:
+    lap_kubeadm_kubelet_configured: "{{ lap_kubeadm_artifacts.results[0].stat.exists }}"
+    lap_kubeadm_admin_configured: "{{ lap_kubeadm_artifacts.results[1].stat.exists }}"
+    lap_kubeadm_apiserver_configured: "{{ lap_kubeadm_artifacts.results[2].stat.exists }}"
+
+- name: Reject partial control-plane bootstrap state
+  ansible.builtin.assert:
+    that:
+      - >-
+        (not lap_kubeadm_kubelet_configured
+         and not lap_kubeadm_admin_configured
+         and not lap_kubeadm_apiserver_configured)
+        or
+        (lap_kubeadm_kubelet_configured
+         and lap_kubeadm_admin_configured
+         and lap_kubeadm_apiserver_configured)
+    fail_msg: >-
+      Refusing to run kubeadm against a partially configured control-plane node.
+  when: inventory_hostname in groups['control_planes']
+
+- name: Reject control-plane artifacts on workers
+  ansible.builtin.assert:
+    that:
+      - not lap_kubeadm_admin_configured
+      - not lap_kubeadm_apiserver_configured
+    fail_msg: A worker contains control-plane kubeadm artifacts.
+  when: inventory_hostname in groups['workers']
+
+- name: Record joined state
+  ansible.builtin.set_fact:
+    lap_kubeadm_joined: "{{ lap_kubeadm_kubelet_configured | bool }}"

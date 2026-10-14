@@ -1,0 +1,114 @@
+---
+- name: Validate load-balancer host services
+  hosts: load_balancers
+  become: true
+  gather_facts: false
+  vars:
+    lap_allowed_listener_pattern: >-
+      (127\.0\.0\.1:323|\[::1\]:323|127\.0\.0\.5[34].*:53|
+      0\.0\.0\.0:22|\[::\]:22|{{ lab.network.api_virtual_ip }}:53|
+      {{ lab.network.api_virtual_ip }}:6443)
+  tasks:
+    - name: Check managed services
+      ansible.builtin.command:
+        argv: [systemctl, is-active, "{{ item }}"]
+      loop:
+        - haproxy
+        - keepalived
+        - dnsmasq
+        - nftables
+      changed_when: false
+
+    - name: Validate HAProxy configuration
+      ansible.builtin.command:
+        argv: [haproxy, -c, -f, /etc/haproxy/haproxy.cfg]
+      changed_when: false
+
+    - name: Validate Keepalived configuration
+      ansible.builtin.command:
+        argv: [keepalived, --config-test, --use-file=/etc/keepalived/keepalived.conf]
+      changed_when: false
+
+    - name: Validate dnsmasq configuration
+      ansible.builtin.command:
+        argv: [dnsmasq, --test, --conf-file=/etc/dnsmasq.conf]
+      changed_when: false
+
+    - name: Read project nftables table
+      ansible.builtin.command:
+        argv: [nft, list, table, inet, lap]
+      register: lap_nftables_table
+      changed_when: false
+
+    - name: Read listening sockets
+      ansible.builtin.command:
+        argv: [ss, -H, -lntup]
+      register: lap_listeners
+      changed_when: false
+
+    - name: Read VIP ownership
+      ansible.builtin.command:
+        argv: [ip, -o, -4, address, show, to, "{{ lab.network.api_virtual_ip }}/32"]
+      register: lap_vip_address
+      changed_when: false
+      failed_when: false
+
+    - name: Record VIP ownership count
+      ansible.builtin.set_fact:
+        lap_vip_count: "{{ 1 if lap_vip_address.stdout | length > 0 else 0 }}"
+
+    - name: Identify unexpected listeners
+      ansible.builtin.set_fact:
+        lap_unexpected_listeners: >-
+          {{ lap_listeners.stdout_lines
+             | reject('search', lap_allowed_listener_pattern | replace(' ', ''))
+             | list }}
+
+    - name: Assert firewall and listener constraints
+      ansible.builtin.assert:
+        that:
+          - "'policy drop' in lap_nftables_table.stdout"
+          - "'0.0.0.0:22' in lap_listeners.stdout"
+          - "'0.0.0.0:6443' not in lap_listeners.stdout"
+          - "'[::]:6443' not in lap_listeners.stdout"
+          - lap_unexpected_listeners | length == 0
+        fail_msg: Load-balancer firewall or listeners escaped the expected scope.
+
+    - name: Assert exactly one VIP owner
+      ansible.builtin.assert:
+        that:
+          - >-
+            groups['load_balancers']
+            | map('extract', hostvars, 'lap_vip_count')
+            | map('int')
+            | sum == 1
+        fail_msg: The Kubernetes API VIP must be present on exactly one load balancer.
+      run_once: true
+
+- name: Validate lab DNS from later-slice hosts
+  hosts: control_planes:workers:build_machines
+  become: false
+  gather_facts: false
+  vars:
+    lap_dns_expectations:
+      - name: "{{ lab.hostnames.platform_api }}"
+        address: "{{ lab.network.envoy_gateway_ip }}"
+      - name: "{{ lab.hostnames.registry }}"
+        address: "{{ hostvars[groups['build_machines'][0]].ansible_host }}"
+      - name: "{{ lab.hostnames.build_agent }}"
+        address: "{{ hostvars[groups['build_machines'][0]].ansible_host }}"
+      - name: "{{ lab.hostnames.grafana }}"
+        address: "{{ lab.network.envoy_gateway_ip }}"
+      - name: "host-services-check.{{ lab.lab.application_domain }}"
+        address: "{{ lab.network.envoy_gateway_ip }}"
+  tasks:
+    - name: Query authoritative DNS records through the VIP
+      ansible.builtin.script:
+        cmd: >-
+          files/query_dns.py
+          {{ lab.network.api_virtual_ip }}
+          {{ item.name }}
+          {{ item.address }}
+        executable: python3
+      loop: "{{ lap_dns_expectations }}"
+      changed_when: false
